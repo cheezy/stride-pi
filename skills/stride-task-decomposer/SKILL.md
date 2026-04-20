@@ -13,13 +13,13 @@ Break down large goals and initiatives into well-sized, dependency-ordered tasks
 
 ## When to invoke
 
-Invoke this skill when:
+**MANDATORY** invocation when any of the following hold, per the decision matrix in `stride-subagent-workflow`:
 
 - A claimed task is a **goal** type
 - A claimed task has **large** complexity and no child tasks
 - A work estimate exceeds 25 hours
 
-Per the decision matrix in `stride-subagent-workflow`, goals must be decomposed before implementation — never implement a goal directly.
+Goals must be decomposed before implementation — never implement a goal directly.
 
 ## Inputs (from your current context)
 

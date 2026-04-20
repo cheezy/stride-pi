@@ -13,7 +13,7 @@ Analyze hook failure output, identify root causes, and produce a prioritized fix
 
 ## When to invoke
 
-Invoke this skill whenever a blocking Stride hook fails (non-zero exit code) and you need to prioritize the fix order. The hooks are:
+**MANDATORY** whenever a blocking Stride hook fails (non-zero exit code) — use this skill to prioritize the fix order before making blind attempts. The hooks are:
 
 - `before_doing` — runs before claiming work (pull code, setup)
 - `after_doing` — runs before marking complete (tests, lint, build)

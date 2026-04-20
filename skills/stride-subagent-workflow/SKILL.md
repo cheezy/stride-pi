@@ -267,7 +267,7 @@ INLINE SKILLS WORKFLOW:
 |     |- Fix any Critical/Important issues found
 |- 7. Proceed to after_doing hook (stride-completing-tasks)
 
-INLINE SKILLS (defined in agents/ directory):
+INLINE SKILLS (defined in skills/ directory):
   stride-task-decomposer    - Breaks goals into dependency-ordered child tasks
   stride-task-explorer      - Reads key_files, finds tests, searches patterns
   stride-task-reviewer      - Reviews diff against acceptance criteria & pitfalls
