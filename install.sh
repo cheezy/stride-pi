@@ -15,15 +15,19 @@ set -euo pipefail
 REPO="https://github.com/cheezy/stride-pi.git"
 GLOBAL_DIR="$HOME/.pi/agent"
 MODE="global"
+INSTALL_EXTENSION="false"
 
 for arg in "$@"; do
   case "$arg" in
     --project) MODE="project" ;;
+    --with-extension) INSTALL_EXTENSION="true" ;;
     --help|-h)
-      echo "Usage: install.sh [--project]"
+      echo "Usage: install.sh [--project] [--with-extension]"
       echo ""
-      echo "  (default)   Install globally to ~/.pi/agent/ (available in all projects)"
-      echo "  --project   Install to .pi/ in the current directory"
+      echo "  (default)          Install globally to ~/.pi/agent/ (available in all projects)"
+      echo "  --project          Install to .pi/ in the current directory"
+      echo "  --with-extension   Also install the subagent-dispatch TypeScript extension"
+      echo "                     (recommended for isolation + parallelism — see README)"
       exit 0
       ;;
   esac
@@ -75,14 +79,39 @@ else
   echo "  cp ~/.pi/agent/AGENTS.md ./AGENTS.md"
 fi
 
+# Optionally install the subagent-dispatch extension
+extension_count=0
+if [ "$INSTALL_EXTENSION" = "true" ]; then
+  mkdir -p "$INSTALL_DIR/extensions"
+  for ext_dir in "$TMPDIR/stride-pi/extensions"/*/; do
+    [ -d "$ext_dir" ] || continue
+    ext_name=$(basename "$ext_dir")
+    # Skip placeholder directories (.gitkeep-only) that have no index.ts
+    [ -f "$ext_dir/index.ts" ] || continue
+    echo "Installing extension: $ext_name"
+    mkdir -p "$INSTALL_DIR/extensions/$ext_name"
+    cp -R "$ext_dir"/. "$INSTALL_DIR/extensions/$ext_name/"
+    extension_count=$((extension_count + 1))
+  done
+fi
+
 echo ""
 echo "Stride for Pi installed successfully!"
 echo ""
 echo "Installed:"
-echo "  Skills: $(find "$INSTALL_DIR/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') skills"
+echo "  Skills:     $(find "$INSTALL_DIR/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') skills"
+if [ "$INSTALL_EXTENSION" = "true" ]; then
+  echo "  Extensions: $extension_count extension(s)"
+fi
 echo ""
 echo "Next steps:"
 echo "  1. Create .stride_auth.md with your API credentials (see README)"
 echo "  2. Create .stride.md with your hook commands"
 echo "  3. Add .stride_auth.md to .gitignore"
 echo "  4. Invoke the stride-workflow skill to begin the task lifecycle"
+if [ "$INSTALL_EXTENSION" != "true" ]; then
+  echo ""
+  echo "Optional: Install the subagent-dispatch extension for isolation + parallelism:"
+  echo "  curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | bash -s -- --with-extension"
+  echo "  (adds the dispatch_agent tool; see README for details)"
+fi

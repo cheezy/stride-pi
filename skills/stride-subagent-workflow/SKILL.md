@@ -28,22 +28,41 @@ This skill contains the decision matrix that determines which inline skills to i
 
 This skill orchestrates inline skills at four points in the Stride workflow: decomposition for goals, exploration after claiming, planning for complex tasks, and code review before completion hooks. It tells you WHEN to invoke each inline skill — the agents themselves handle the HOW.
 
-## Pi Inline Skills (Phase 2a)
+## Pi Dispatch Paths (dual-path)
 
-Pi (https://github.com/badlogic/pi-mono) does not ship with a native subagent dispatch mechanism. On sibling plugins (Claude Code, Codex CLI, Gemini CLI), the four roles named in this skill — `task-explorer`, `task-reviewer`, `task-decomposer`, `hook-diagnostician` — run as isolated subagents. On stride-pi, they run as **inline skills** in the main agent's context. Phase 2b (tracked as G69's W252) will evaluate whether to upgrade to a TypeScript extension that shells out to `pi -p` for isolation and parallelism; until then, inline is the supported path.
+Pi (https://github.com/badlogic/pi-mono) does not ship with a native subagent dispatch mechanism. stride-pi supports **both** paths below; use whichever is available in your Pi install.
 
-**Invoke these skills directly from your main context when the decision matrix says so:**
+### Preferred: `dispatch_agent` extension (Phase 2b)
 
-| Role | stride-pi skill | When to invoke |
+If the `stride-pi-subagent-dispatch` extension is installed (see `extensions/subagent-dispatch/` in the stride-pi repo; installed automatically by `install.sh --with-extension` or manually by copying into `~/.pi/agent/extensions/`), a `dispatch_agent(agent, prompt)` tool is available. **This is the recommended path** when available — it runs each subagent in an isolated `pi -p` subprocess with its own context window, giving parallelism and isolation equivalent to Claude Code / Codex CLI / Gemini CLI subagents.
+
+Invoke the tool directly:
+
+```
+dispatch_agent({
+  agent: "stride-task-explorer",   // or stride-task-reviewer / -decomposer / -hook-diagnostician
+  prompt: "<task metadata + any instructions — include key_files, patterns_to_follow, acceptance_criteria>"
+})
+```
+
+The tool returns the subagent's structured output as a string. Your main context stays clean of the raw file contents the subagent explored.
+
+### Fallback: inline skills (Phase 2a)
+
+If `dispatch_agent` is not available (extension not installed, older Pi version, etc.), use the inline skills in your main context:
+
+| Role | Inline skill | When |
 |---|---|---|
 | Exploration | `stride-task-explorer` | After claim, when complexity is medium+ or `key_files` has 2+ entries |
-| Code review | `stride-task-reviewer` | After implementation, before the `after_doing` hook, same threshold |
+| Code review | `stride-task-reviewer` | After implementation, before `after_doing`, same threshold |
 | Goal decomposition | `stride-task-decomposer` | When a claimed task is a goal or large-undecomposed |
 | Hook failure triage | `stride-hook-diagnostician` | When any blocking hook fails with non-zero exit |
 
-The work each skill does is byte-for-byte identical to the subagent version — only the isolation differs. You perform the exploration/review/decomposition/diagnosis inline, in your main context, then proceed with the result.
+The work each skill does is byte-for-byte identical to the dispatched version — only the isolation differs. You perform the exploration/review/decomposition/diagnosis inline, in your main context, then proceed with the result.
 
-**Recording results in the `/complete` payload:** Because you genuinely performed the work (not skipped it), use the **dispatched shape** (`dispatched: true`) for `explorer_result` and `reviewer_result`. See `stride-completing-tasks/SKILL.md` for the full schema. The skip-form (`dispatched: false` with a reason from the 5-value enum) is only for steps the decision matrix told you to skip, not for steps you performed inline.
+### Recording results in the `/complete` payload
+
+Whether you used `dispatch_agent` or the inline skill, you genuinely performed the work (not skipped it). Use the **dispatched shape** (`dispatched: true`) for `explorer_result` and `reviewer_result` in both cases. The skip-form (`dispatched: false` with a reason from the 5-value enum) is only for steps the decision matrix told you to skip, not for steps you performed via either path. See `stride-completing-tasks/SKILL.md` for the full schema.
 
 ## The Iron Law
 

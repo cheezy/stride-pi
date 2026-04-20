@@ -1,6 +1,6 @@
 # ADR-001: Subagent Model for stride-pi
 
-**Status:** Superseded 2026-04-20 — see **Addendum** at bottom. 2a ships as the baseline; 2b is the recommended path (W252 reopened).
+**Status:** Accepted — 2a + 2b both supported; 2b recommended. Shipped via W277 on 2026-04-20. See **Addendum** at bottom for the reversal history.
 **Date:** 2026-04-20
 **Context:** stride-pi Phase 2 (G69)
 **Decision task:** W251 (original), reversal recorded same day

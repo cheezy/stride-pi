@@ -150,14 +150,38 @@ stride-enriching-tasks           ← WHEN a task has empty key_files/testing_str
 | `stride-enriching-tasks` | Task has empty `key_files` / `testing_strategy` | Transform minimal specs into complete tasks |
 | `stride-subagent-workflow` | After claiming, before implementation | Decision matrix for exploration and review |
 
-## Subagent Support (Phase 2 — not yet available)
+## Subagent Support (Dual-Path)
 
-Pi does not ship with native subagent dispatch. The `task-explorer`, `task-reviewer`, `task-decomposer`, and `hook-diagnostician` named in `stride-subagent-workflow` are Claude Code / Codex CLI subagents from sibling plugins. For Pi, Phase 2 (tracked as G69 in Stride) will decide between:
+Pi does not ship with native subagent dispatch. stride-pi provides two paths; both are shipped:
 
-- **2a: Inline skills** — port the 4 agents as additional skills the main agent invokes directly. No extension code; simpler, but loses isolation.
-- **2b: TypeScript extension** — a `dispatch_agent(name, prompt)` tool that shells out to `pi -p` with per-agent `SYSTEM.md` overrides. Preserves isolation and parallelism.
+### Preferred: the `subagent-dispatch` extension (Phase 2b)
 
-Until Phase 2 lands, perform exploration and review **inline** using the task's `key_files`, `patterns_to_follow`, and `acceptance_criteria` as your guide. Record the outcome as a self-reported skip in the `explorer_result` and `reviewer_result` fields on `/complete`, using `reason: "no_subagent_support"` (or `self_reported_exploration` / `self_reported_review` for substantive inline work). See `stride-completing-tasks` for the exact payload shape.
+Install with the `--with-extension` flag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | bash -s -- --with-extension
+```
+
+This installs a TypeScript Pi extension that registers a `dispatch_agent(agent, prompt)` tool. When you invoke it, the tool spawns an isolated `pi -p` subprocess with `PI_CODING_AGENT_DIR` pointed at an ephemeral config directory and `--append-system-prompt` pointed at the per-agent SYSTEM.md. The subagent runs in its own context window, returns structured output, and exits — your main agent's context stays clean.
+
+Four agents are registered: `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The `stride-subagent-workflow` skill documents when to use each.
+
+### Fallback: inline skills (Phase 2a)
+
+If the extension isn't installed (default `install.sh` without `--with-extension`, or an older Pi version that can't load the extension), four inline skills provide the same functionality without the isolation: `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
+
+### Which should you use?
+
+Install with `--with-extension` unless you have a specific reason not to. The extension gives you:
+- **Isolation** — exploration of large `key_files` doesn't consume your main agent's context budget
+- **Parallelism** — multiple key_files can be explored concurrently (future enhancement; one-at-a-time today)
+- **Compatibility** — matches the subagent model on Claude Code, Codex CLI, and Gemini CLI sibling plugins
+
+The inline fallback exists for container environments that can't run extensions or users who prefer a simpler install.
+
+### Recording results in `/complete`
+
+Whichever path you used, you genuinely performed the work. Use the **dispatched shape** (`dispatched: true`, `summary` ≥ 40 non-whitespace chars, `duration_ms`) for both `explorer_result` and `reviewer_result` on the `/complete` payload. The skip-form with `reason: "..."` is only for steps the decision matrix explicitly skipped. See `stride-completing-tasks` for the full schema.
 
 ## Hook Execution
 

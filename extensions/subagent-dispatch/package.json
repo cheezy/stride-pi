@@ -1,0 +1,16 @@
+{
+  "name": "stride-pi-subagent-dispatch",
+  "version": "0.1.0",
+  "description": "Pi extension that dispatches Stride's 4 subagents (task-explorer, task-reviewer, task-decomposer, hook-diagnostician) as isolated `pi -p` subprocesses.",
+  "license": "MIT",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.67.68",
+    "@sinclair/typebox": "^0.34.49"
+  }
+}
