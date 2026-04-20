@@ -79,6 +79,33 @@ git push origin main
 
 Each section is optional. Pi has no automatic hook interception, so the agent reads and executes these commands directly per the skill instructions.
 
+## Skill Activation
+
+Pi uses the [Agent Skills standard](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) for skill discovery and invocation. After running `install.sh`, Pi prints the discovered skills at startup:
+
+```
+[Skills]
+  stride-claiming-tasks, stride-completing-tasks, stride-creating-goals,
+  stride-creating-tasks, stride-enriching-tasks, stride-subagent-workflow,
+  stride-workflow
+```
+
+That startup line confirms Pi has loaded all 7 skills from `~/.pi/agent/skills/` (or `.pi/skills/` for `--project` installs). Skill metadata (name + description from each `SKILL.md`'s YAML frontmatter) is then available to the agent throughout the session.
+
+**Two activation paths:**
+
+1. **Auto-activation via description match.** Each skill's `description:` frontmatter line begins with "MANDATORY" wording pointing at the trigger condition (e.g., "MANDATORY before calling `/api/tasks/:id/complete`"). When your prompt matches a trigger, the agent should pick up the skill without being told. If your prompt is "claim the next Stride task," the agent engages `stride-claiming-tasks`.
+
+2. **Explicit invocation via slash-command.** If auto-activation doesn't fire for a given prompt, you can force-load a skill by typing:
+
+   ```
+   /skill:stride-workflow
+   ```
+
+   The `stride-workflow` orchestrator is the recommended explicit entry point for any Stride work — it walks through claim → explore → implement → review → complete in a single skill.
+
+**Recommendation:** Start by typing `/skill:stride-workflow` the first time you begin a Stride task in a session. That one invocation loads the full orchestrator and its chain-of-reference to the other 6 skills.
+
 ## Mandatory Skill Chain
 
 Every Stride skill is **mandatory** — not optional. Each skill contains required API fields, hook execution patterns, and validation rules that are only documented in that skill. Attempting to call Stride API endpoints without the corresponding skill results in API rejections.

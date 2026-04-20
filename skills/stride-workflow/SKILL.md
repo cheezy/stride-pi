@@ -5,6 +5,16 @@ description: Single orchestrator for the complete Stride task lifecycle. Replace
 
 # Stride: Workflow Orchestrator
 
+## Activation
+
+This skill auto-activates when the agent's prompt matches any Stride workflow trigger (claim, explore, implement, review, complete). If auto-activation doesn't fire on Pi for some reason, force-load this orchestrator explicitly:
+
+```
+/skill:stride-workflow
+```
+
+That one invocation loads the full lifecycle and chains of reference to the other 6 Stride skills.
+
 ## Purpose
 
 This skill replaces the fragmented pattern of remembering to activate `stride-claiming-tasks`, `stride-subagent-workflow`, and `stride-completing-tasks` at specific moments. Instead, activate this one skill and follow it through. Every step is here. Nothing is elsewhere.
