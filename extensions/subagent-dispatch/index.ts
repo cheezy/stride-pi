@@ -174,11 +174,16 @@ async function runSubprocess(
       },
     });
 
+    let killTimer: NodeJS.Timeout | undefined;
     let wasAborted = false;
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+    const messages: string[] = [];
+
     const killProc = () => {
       wasAborted = true;
       proc.kill("SIGTERM");
-      setTimeout(() => {
+      killTimer = setTimeout(() => {
         if (!proc.killed) proc.kill("SIGKILL");
       }, 5000);
     };
@@ -191,26 +196,24 @@ async function runSubprocess(
       }
     }
 
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
-    const messages: string[] = [];
+    const ingestLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      try {
+        const event = JSON.parse(trimmed);
+        const text = extractMessageText(event);
+        if (text) messages.push(text);
+      } catch {
+        // Not JSON — ignore (pi should emit only JSON in --mode json mode)
+      }
+    };
 
     proc.stdout.on("data", (chunk: Buffer) => {
       stdoutBuffer += chunk.toString("utf-8");
       // Parse complete lines as they arrive; retain any trailing partial line.
       const lines = stdoutBuffer.split("\n");
       stdoutBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const event = JSON.parse(trimmed);
-          const text = extractMessageText(event);
-          if (text) messages.push(text);
-        } catch {
-          // Not JSON — ignore (pi should emit only JSON in --mode json mode)
-        }
-      }
+      for (const line of lines) ingestLine(line);
     });
 
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -218,6 +221,7 @@ async function runSubprocess(
     });
 
     proc.on("error", (err) => {
+      if (killTimer) clearTimeout(killTimer);
       resolve({
         content: `stride-pi subagent-dispatch: failed to spawn subprocess (${err.message}). Check that \`pi\` is installed and in PATH.`,
         isError: true,
@@ -225,6 +229,7 @@ async function runSubprocess(
     });
 
     proc.on("close", (code) => {
+      if (killTimer) clearTimeout(killTimer);
       if (wasAborted) {
         resolve({
           content: "stride-pi subagent-dispatch: subprocess aborted.",
@@ -234,15 +239,7 @@ async function runSubprocess(
       }
 
       // Flush any trailing partial line
-      if (stdoutBuffer.trim()) {
-        try {
-          const event = JSON.parse(stdoutBuffer.trim());
-          const text = extractMessageText(event);
-          if (text) messages.push(text);
-        } catch {
-          // ignore
-        }
-      }
+      if (stdoutBuffer) ingestLine(stdoutBuffer);
 
       if (code !== 0) {
         resolve({
