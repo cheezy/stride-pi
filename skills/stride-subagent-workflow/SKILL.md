@@ -1,19 +1,19 @@
 ---
 name: stride-subagent-workflow
-description: MANDATORY after claiming any Stride task. Contains the decision matrix for invoking task-explorer, task-reviewer, task-decomposer, and hook-diagnostician custom agents. Skipping means no codebase exploration before implementation and no code review before completion — causing wrong approaches and missed acceptance criteria. Activate IMMEDIATELY after claim succeeds, BEFORE writing any code.
+description: MANDATORY after claiming any Stride task. Contains the decision matrix for invoking the stride-task-explorer, stride-task-reviewer, stride-task-decomposer, and stride-hook-diagnostician inline skills. Skipping means no codebase exploration before implementation and no code review before completion — causing wrong approaches and missed acceptance criteria. Activate IMMEDIATELY after claim succeeds, BEFORE writing any code.
 ---
 
-# Stride: Custom Agent Workflow
+# Stride: Subagent Workflow (inline on Pi)
 
 ## THIS SKILL IS MANDATORY AFTER CLAIMING — NOT OPTIONAL
 
 **If you just claimed a Stride task and are about to start implementation, you MUST activate this skill first.**
 
-This skill contains the decision matrix that determines which custom agents to invoke:
-- `task-explorer` — Read key_files and discover patterns before coding
-- `task-reviewer` — Review your changes against acceptance criteria before completion
-- `task-decomposer` — Break goals into properly-sized subtasks
-- `hook-diagnostician` — Diagnose hook failures with prioritized fix plans
+This skill contains the decision matrix that determines which inline skills to invoke:
+- `stride-task-explorer` — Read key_files and discover patterns before coding
+- `stride-task-reviewer` — Review your changes against acceptance criteria before completion
+- `stride-task-decomposer` — Break goals into properly-sized subtasks
+- `stride-hook-diagnostician` — Diagnose hook failures with prioritized fix plans
 
 **Skipping this skill means:**
 - No codebase exploration before implementation (wrong approach, 2+ hours wasted)
@@ -26,21 +26,28 @@ This skill contains the decision matrix that determines which custom agents to i
 
 **Coding without context = wrong approach and rework. Exploring and planning first = confident, first-pass quality.**
 
-This skill orchestrates custom agents at four points in the Stride workflow: decomposition for goals, exploration after claiming, planning for complex tasks, and code review before completion hooks. It tells you WHEN to invoke each custom agent — the agents themselves handle the HOW.
+This skill orchestrates inline skills at four points in the Stride workflow: decomposition for goals, exploration after claiming, planning for complex tasks, and code review before completion hooks. It tells you WHEN to invoke each inline skill — the agents themselves handle the HOW.
 
-## Pi Subagents (Phase 2 — not yet available)
+## Pi Inline Skills (Phase 2a)
 
-Pi (https://github.com/badlogic/pi-mono) does not ship with a native subagent dispatch mechanism. The `task-explorer`, `task-reviewer`, `task-decomposer`, and `hook-diagnostician` named in this skill refer to Claude Code / Codex CLI subagents from sibling plugins. For Pi, Phase 2 of this plugin's roadmap (tracked as G69 in Stride) will decide between inline skills (Shape 2a) and a TypeScript extension that shells out to `pi -p` for isolated runs (Shape 2b).
+Pi (https://github.com/badlogic/pi-mono) does not ship with a native subagent dispatch mechanism. On sibling plugins (Claude Code, Codex CLI, Gemini CLI), the four roles named in this skill — `task-explorer`, `task-reviewer`, `task-decomposer`, `hook-diagnostician` — run as isolated subagents. On stride-pi, they run as **inline skills** in the main agent's context. Phase 2b (tracked as G69's W252) will evaluate whether to upgrade to a TypeScript extension that shells out to `pi -p` for isolation and parallelism; until then, inline is the supported path.
 
-**Until then, in the stride-pi plugin:**
-- Proceed directly to implementation using the task's `key_files`, `patterns_to_follow`, and `acceptance_criteria` as your guide
-- The decision matrix logic still applies — just perform the exploration and review steps manually (inline)
-- Record the outcome as a self-reported skip in the `explorer_result` and `reviewer_result` fields on `/complete`, using `reason: "self_reported_exploration"` or `reason: "self_reported_review"` and a 40+ character summary
-- See `stride-completing-tasks/SKILL.md` for the exact shape
+**Invoke these skills directly from your main context when the decision matrix says so:**
+
+| Role | stride-pi skill | When to invoke |
+|---|---|---|
+| Exploration | `stride-task-explorer` | After claim, when complexity is medium+ or `key_files` has 2+ entries |
+| Code review | `stride-task-reviewer` | After implementation, before the `after_doing` hook, same threshold |
+| Goal decomposition | `stride-task-decomposer` | When a claimed task is a goal or large-undecomposed |
+| Hook failure triage | `stride-hook-diagnostician` | When any blocking hook fails with non-zero exit |
+
+The work each skill does is byte-for-byte identical to the subagent version — only the isolation differs. You perform the exploration/review/decomposition/diagnosis inline, in your main context, then proceed with the result.
+
+**Recording results in the `/complete` payload:** Because you genuinely performed the work (not skipped it), use the **dispatched shape** (`dispatched: true`) for `explorer_result` and `reviewer_result`. See `stride-completing-tasks/SKILL.md` for the full schema. The skip-form (`dispatched: false` with a reason from the 5-value enum) is only for steps the decision matrix told you to skip, not for steps you performed inline.
 
 ## The Iron Law
 
-**INVOKE CUSTOM AGENTS BASED ON TASK COMPLEXITY — NEVER SKIP FOR MEDIUM/LARGE TASKS, NEVER ADD OVERHEAD FOR SIMPLE TASKS**
+**INVOKE INLINE SKILLS BASED ON TASK COMPLEXITY — NEVER SKIP FOR MEDIUM/LARGE TASKS, NEVER ADD OVERHEAD FOR SIMPLE TASKS**
 
 ## The Critical Mistake
 
@@ -61,9 +68,9 @@ Activate this skill **after claiming a task** (via `stride-claiming-tasks`) and 
 
 ## Decision Matrix
 
-Use this matrix to determine which custom agents to invoke based on task attributes:
+Use this matrix to determine which inline skills to invoke based on task attributes:
 
-| Task Attributes | task-decomposer | task-explorer | Plan | task-reviewer |
+| Task Attributes | stride-task-decomposer | stride-task-explorer | Plan | stride-task-reviewer |
 |---|---|---|---|---|
 | small, 0-1 key_files | Skip | Skip | Skip | Skip |
 | small, 2+ key_files | Skip | Run | Skip | Run |
@@ -78,14 +85,14 @@ Use this matrix to determine which custom agents to invoke based on task attribu
 
 **Quick rules:**
 - If the task is a **goal** or has **large complexity without child tasks** or a **25+ hour estimate**: invoke the decomposer first. The decomposer breaks it into claimable child tasks — you don't implement goals directly.
-- If the task is small with 0-1 key_files, skip all custom agents and code directly.
+- If the task is small with 0-1 key_files, skip all inline skills and code directly.
 - Otherwise, at minimum run the explorer and reviewer.
 
 ## Phase 0: Decomposition (Goals and Large Undecomposed Tasks)
 
 **When:** Task type is `goal`, OR task has `large` complexity with no child tasks, OR task has a 25+ hour estimate.
 
-**What to do:** Invoke the `task-decomposer` custom agent, passing the goal/task metadata.
+**What to do:** Invoke the `stride-task-decomposer` skill, passing the goal/task metadata.
 
 Provide the agent with:
 - The task's `title` and `description`
@@ -115,7 +122,7 @@ The decomposer will return an ordered list of child tasks with:
 
 **When:** Task complexity is medium or large, OR task has 2+ key_files.
 
-**What to do:** Invoke the `task-explorer` custom agent, passing the task metadata.
+**What to do:** Invoke the `stride-task-explorer` skill, passing the task metadata.
 
 Provide the agent with:
 - The task's `key_files` array (file paths and notes)
@@ -146,7 +153,7 @@ Produce an ordered implementation plan. Follow this plan during implementation.
 
 **When:** Task complexity is medium or large, OR task has 2+ key_files. Skip only for small tasks with 0-1 key_files.
 
-**What to do:** Invoke the `task-reviewer` custom agent, passing:
+**What to do:** Invoke the `stride-task-reviewer` skill, passing:
 - The git diff of all your changes
 - The task's `acceptance_criteria`
 - The task's `pitfalls` array
@@ -171,7 +178,7 @@ Task Claimed
     v
 Is it a goal OR large+undecomposed OR 25+ hours?
     |
-    +--> YES --> Invoke task-decomposer custom agent
+    +--> YES --> Invoke stride-task-decomposer skill
     |               |
     |               v
     |           Create child tasks via API
@@ -186,7 +193,7 @@ Is it a goal OR large+undecomposed OR 25+ hours?
                     +--> Medium/Large OR 2+ key_files?
                             |
                             v
-                        Invoke task-explorer custom agent
+                        Invoke stride-task-explorer skill
                             |
                             v
                         Medium/Large OR 3+ key_files OR 3+ criteria?
@@ -207,7 +214,7 @@ Is it a goal OR large+undecomposed OR 25+ hours?
                             |
                             +--> Small, 0-1 key_files? --> Skip reviewer --> Run after_doing hook
                             |
-                            +--> Otherwise --> Invoke task-reviewer custom agent
+                            +--> Otherwise --> Invoke stride-task-reviewer skill
                                                 |
                                                 v
                                             Issues found?
@@ -241,30 +248,30 @@ Is it a goal OR large+undecomposed OR 25+ hours?
 ## Quick Reference Card
 
 ```
-CUSTOM AGENT WORKFLOW:
+INLINE SKILLS WORKFLOW:
 |- 0. Task claimed successfully
 |- 1. Is it a goal OR large+undecomposed OR 25+ hours?
-|     |- YES -> Invoke task-decomposer custom agent
+|     |- YES -> Invoke stride-task-decomposer skill
 |     |- Create child tasks via API
 |     |- Claim first child task (re-enter workflow)
 |- 2. Check decision matrix (complexity + key_files count)
 |- 3. If medium+ OR 2+ key_files:
-|     |- Invoke task-explorer custom agent with task metadata
+|     |- Invoke stride-task-explorer skill with task metadata
 |     |- Read and use the explorer's output
 |- 4. If medium+ OR 3+ key_files OR 3+ criteria:
 |     |- Plan implementation approach using explorer output + task metadata
 |     |- Follow the resulting plan
 |- 5. Implement the task
 |- 6. If medium+ OR 2+ key_files:
-|     |- Invoke task-reviewer custom agent with diff + task metadata
+|     |- Invoke stride-task-reviewer skill with diff + task metadata
 |     |- Fix any Critical/Important issues found
 |- 7. Proceed to after_doing hook (stride-completing-tasks)
 
-CUSTOM AGENTS (defined in agents/ directory):
-  task-decomposer    - Breaks goals into dependency-ordered child tasks
-  task-explorer      - Reads key_files, finds tests, searches patterns
-  task-reviewer      - Reviews diff against acceptance criteria & pitfalls
-  hook-diagnostician - Diagnoses hook failures with prioritized fix plans
+INLINE SKILLS (defined in agents/ directory):
+  stride-task-decomposer    - Breaks goals into dependency-ordered child tasks
+  stride-task-explorer      - Reads key_files, finds tests, searches patterns
+  stride-task-reviewer      - Reviews diff against acceptance criteria & pitfalls
+  stride-hook-diagnostician - Diagnoses hook failures with prioritized fix plans
 
 INVOKE DECOMPOSER WHEN:
   Task type is goal, OR large complexity without children, OR 25+ hour estimate
@@ -284,4 +291,4 @@ This skill sits between claiming and completing in the workflow:
 **FORBIDDEN:** Skipping from claiming directly to completing without checking the decision matrix here. Even for small tasks, you must check the matrix — it takes 5 seconds and prevents wrong decisions.
 
 ---
-**References:** This skill works with `stride-claiming-tasks` (activate after claim) and `stride-completing-tasks` (code review before hooks). Agent definitions are in `agents/task-decomposer.md`, `agents/task-explorer.md`, `agents/task-reviewer.md`, and `agents/hook-diagnostician.md`.
+**References:** This skill works with `stride-claiming-tasks` (activate after claim) and `stride-completing-tasks` (code review before hooks). Inline skills are at `skills/stride-task-decomposer/SKILL.md`, `skills/stride-task-explorer/SKILL.md`, `skills/stride-task-reviewer/SKILL.md`, and `skills/stride-hook-diagnostician/SKILL.md`.
