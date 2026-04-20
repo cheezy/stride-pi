@@ -1,9 +1,9 @@
 # ADR-001: Subagent Model for stride-pi
 
-**Status:** Accepted — 2a chosen; 2b deferred (W252 marked out-of-scope)
+**Status:** Superseded 2026-04-20 — see **Addendum** at bottom. 2a ships as the baseline; 2b is the recommended path (W252 reopened).
 **Date:** 2026-04-20
 **Context:** stride-pi Phase 2 (G69)
-**Decision task:** W251
+**Decision task:** W251 (original), reversal recorded same day
 
 ## Context
 
@@ -72,3 +72,33 @@ Reopen this decision if any of the following are observed in production Pi usage
 - Pi's own roadmap adds native subagent support — at which point 2b becomes "implement the native path" rather than "build a workaround"
 
 Document the evidence, then claim W252 to build the 2b extension. The 4 inline skills remain in place as fallbacks for older Pi versions.
+
+---
+
+## Addendum — 2026-04-20 (same day): decision reversed
+
+The original decision above deferred Phase 2b based on four points: the 2a pilot "worked," 2a cost near zero, the gains from 2b were "not currently needed," and the decision was reversible.
+
+On reconsideration later the same day, those points don't hold up:
+
+1. **"The pilot works" was overstated.** W250 verified that the 4 inline skill *files* are structurally correct and produce G65-compatible output shapes on paper. Nobody has actually run an end-to-end Pi session using them and measured context usage, exploration quality, or whether a main agent's context budget survives inline exploration + implementation + review on a real medium-complexity task.
+2. **"Cost to build" was over-weighted.** W252's TypeScript extension was already planned work with a scoped estimate. The right question was "which architecture should stride-pi ship," not "which is cheapest to build."
+3. **"Stride tasks are 1–3 hours" is hand-waving.** I did not measure Pi's context budget or the compounding effect of inline exploration on top of implementation context. The "should be fine" reasoning was unsupported.
+4. **The parallelism loss matters.** Exploring N unrelated `key_files` serially is a real context burn that 2b's `pi -p` subprocesses avoid.
+5. **The isolation loss matters for review.** A dispatched reviewer returns a summary; the main agent never sees the full diff or raw file contents. Inline review keeps everything in the main context, which can bias subsequent decisions.
+
+### Revised decision
+
+**Ship 2a as the baseline (it's real and already in the repo).** **Reopen W252 as the recommended path.** When 2b ships, the 4 inline skills remain in place as fallbacks for Pi installs that lack the extension (e.g., older Pi versions, container environments where the extension can't run, or users who opt out for simplicity). Users who install the extension opt into isolation and parallelism.
+
+### What changes in the repo
+
+- The 4 inline skills stay. No regression for anyone currently using them.
+- `stride-subagent-workflow` will gain a dual-path section: "if the extension is installed, use `dispatch_agent()`; otherwise run the inline skill." (A follow-up task, not this ADR.)
+- W252 moves from "deferred" back to Ready in Stride; the decision's reversal conditions (above) are no longer the primary trigger — shipping 2b is now planned work.
+- When W252 ships, flip this ADR's Status line to "Accepted — 2a + 2b both supported; 2b recommended."
+
+### What this ADR did right
+
+The reversal conditions section was the right idea in form — ADRs should be reversible — but the specific triggers were too high a bar (nobody would instrument Pi context usage just to reopen a decision). Architectural decisions should not wait for production failures when the better design is already known.
+
