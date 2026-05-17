@@ -13,5 +13,8 @@
     "skills": ["./skills"],
     "extensions": ["./extensions"],
     "prompts": ["./prompts"]
+  },
+  "scripts": {
+    "test": "node --test extensions/hook-bridge/*.test.ts"
   }
 }

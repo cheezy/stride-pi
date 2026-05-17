@@ -1,0 +1,15 @@
+{
+  "name": "stride-pi-hook-bridge",
+  "version": "0.1.0",
+  "description": "Pi extension that bridges Stride .stride.md lifecycle hooks (before_doing, after_doing, before_review, after_review) onto Pi's tool_call / tool_result events.",
+  "license": "MIT",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.67.68"
+  }
+}
