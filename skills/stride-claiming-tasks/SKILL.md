@@ -28,6 +28,22 @@ The claim API requires fields that are ONLY documented here:
 
 This skill enforces the proper claiming workflow including prerequisite verification, hook execution, and immediate transition to active work.
 
+## How Hooks Fire (Default: Automatic via `hook-bridge`)
+
+As of stride-pi 0.3.0, the `hook-bridge` extension ships in the manifest. When loaded, it intercepts the `POST /api/tasks/claim` curl on Pi's `tool_result` event and runs the `## before_doing` section of `.stride.md` automatically. You do **not** read `.stride.md` yourself, do **not** time the execution, and do **not** assemble a real `before_doing_result` payload — the extension does that work as a side effect of your curl. You include a placeholder `before_doing_result` in the request body solely because the API schema requires the field to be present:
+
+```json
+"before_doing_result": {
+  "exit_code": 0,
+  "output": "Executed by Pi hook-bridge extension",
+  "duration_ms": 0
+}
+```
+
+If `before_doing` fails, `hook-bridge` writes the failure to stderr and surfaces it via `ctx.ui.notify` (when available). The claim itself is **not** unclaimed — the failure is post-curl by construction — but you must fix the failure before doing real work on the task (the task expects the setup `before_doing` performed).
+
+`hook-bridge` is checked into the same plugin as this skill (`extensions/hook-bridge/`) and is declared in `package.json` `pi.extensions`. If your Pi install does not load the extension (you removed it from the manifest, ran with `--no-extensions`, or the load failed), fall back to the **Manual Hook Execution** section near the end of this skill.
+
 ## ⚡ AUTOMATION NOTICE ⚡
 
 **The workflow IS the automation. Every step exists because skipping it caused failures.**
@@ -114,26 +130,21 @@ Before claiming any task, verify these files exist:
 2. **Find available task** - Call `GET /api/tasks/next`
 3. **Review task details** - Read description, acceptance criteria, key files
 4. **Check task completeness** - If key_files is empty OR testing_strategy is missing OR verification_steps is empty, activate stride-enriching-tasks
-5. **Read .stride.md before_doing section** - Get the setup command
-6. **Execute before_doing hook** (blocking, 60s timeout) — Execute each line one at a time, NO permission prompts
-   - Capture: `exit_code`, `output`, `duration_ms`
-7. **If before_doing fails:** FIX ISSUES, do NOT proceed
-8. **Hook succeeded?** Call `POST /api/tasks/claim` WITH hook result
-9. **Task claimed?** BEGIN IMPLEMENTATION IMMEDIATELY
+5. **Call `POST /api/tasks/claim`** with the task identifier and a placeholder `before_doing_result`. `hook-bridge` will run `.stride.md ## before_doing` as a side effect of the curl `tool_result` event.
+6. **If `hook-bridge` reports a `before_doing` failure** (stderr / `ctx.ui.notify`): fix the underlying issue before doing real work, then re-run the failing setup commands manually so the workspace is correct.
+7. **Task claimed?** BEGIN IMPLEMENTATION IMMEDIATELY.
 
 ## Claiming Workflow Flowchart
 
 ```
 Prerequisites Check → Call GET /api/tasks/next → Review task
     ↓
-Read .stride.md before_doing section
+Call POST /api/tasks/claim (placeholder before_doing_result)
     ↓
-Execute before_doing (60s timeout, blocking)
+hook-bridge auto-runs .stride.md ## before_doing on the tool_result
     ↓
-Success? ─NO→ Fix Issues → Retry
-    ↓ YES
-Call POST /api/tasks/claim WITH before_doing_result
-    ↓
+hook-bridge reports failure? ─YES→ Fix underlying issue, re-run setup manually
+    ↓ NO
 BEGIN IMPLEMENTATION IMMEDIATELY
 ```
 
@@ -162,40 +173,20 @@ After reviewing task details, check if the task has sufficient specification for
 
 **Important:** Enrichment happens BEFORE the before_doing hook, not after. The enriched fields help the agent understand the task scope before starting work.
 
-## Hook Execution Pattern
+## When `before_doing` Fails (Automatic Mode)
 
-All hook commands are pre-authorized. Execute them immediately. Do NOT announce, ask permission, or present commands for review.
+`hook-bridge` runs `before_doing` after the claim curl succeeds. A failure does **not** unclaim the task — the task is already yours. Instead:
 
-### Executing before_doing Hook
-
-1. Read the `## before_doing` section from `.stride.md`
-2. Set environment variables (TASK_ID, TASK_IDENTIFIER, etc.)
-3. **Execute each command line immediately — NO permission prompts**
-4. Capture the results:
-
-```bash
-START_TIME=$(date +%s%3N)
-OUTPUT=$(timeout 60 bash -c 'git pull origin main && mix deps.get' 2>&1)
-EXIT_CODE=$?
-END_TIME=$(date +%s%3N)
-DURATION=$((END_TIME - START_TIME))
-```
-
-5. Check exit code - MUST be 0 to proceed
-
-## When Hooks Fail
-
-### If before_doing fails:
-
-1. **DO NOT** call claim endpoint
-2. Read the error output carefully
-3. Fix the underlying issue:
+1. Read the failure output that `hook-bridge` printed to stderr (and to `ctx.ui.notify` when available). The output is prefixed with `Stride before_doing hook failed (exit <code>). Command: <failed line>`.
+2. Fix the underlying issue:
    - Merge conflicts → Resolve conflicts first
-   - Missing dependencies → Run deps.get manually
-   - Test failures → Fix tests before claiming new work
+   - Missing dependencies → Run deps.get / npm install manually
+   - Test failures in main → Fix tests before doing further work
    - Git issues → Check branch status, pull latest changes
-4. Re-run before_doing hook to verify fix
-5. Only call claim endpoint after success
+3. Re-run the failing setup command(s) manually so the workspace is in the state `before_doing` intended.
+4. Continue with implementation.
+
+There is no need to re-call `/api/tasks/claim` — the claim already succeeded.
 
 **Common before_doing failures:**
 - Merge conflicts → Resolve conflicts first
@@ -264,7 +255,7 @@ For environments without custom agent support, proceed directly to implementatio
 
 ## API Request Format
 
-After before_doing hook succeeds, call the claim endpoint:
+Call the claim endpoint with a placeholder `before_doing_result` — `hook-bridge` runs the hook on the curl `tool_result` event:
 
 ```json
 POST /api/tasks/claim
@@ -273,13 +264,13 @@ POST /api/tasks/claim
   "agent_name": "Pi",
   "before_doing_result": {
     "exit_code": 0,
-    "output": "Already up to date.\nResolving Hex dependencies...\nAll dependencies are up to date",
-    "duration_ms": 450
+    "output": "Executed by Pi hook-bridge extension",
+    "duration_ms": 0
   }
 }
 ```
 
-**Critical:** `before_doing_result` is REQUIRED. The API will reject requests without it.
+**Critical:** `before_doing_result` is REQUIRED. The API will reject requests without it. The placeholder above satisfies the schema; the real exit code and output are produced by `hook-bridge` after the curl completes.
 
 ## Red Flags - STOP
 
@@ -306,25 +297,7 @@ POST /api/tasks/claim
 
 ## Common Mistakes
 
-### Mistake 1: Claiming before executing hook
-```bash
-# curl -X POST /api/tasks/claim -d '{"identifier": "W47"}'
-#    Then running hook afterward
-
-# Execute before_doing hook first
-   START_TIME=$(date +%s%3N)
-   OUTPUT=$(timeout 60 bash -c 'git pull && mix deps.get' 2>&1)
-   EXIT_CODE=$?
-   # ...capture results
-
-   # Then call claim WITH result
-   curl -X POST /api/tasks/claim -d '{
-     "identifier": "W47",
-     "before_doing_result": {...}
-   }'
-```
-
-### Mistake 2: Claiming without verifying prerequisites
+### Mistake 1: Claiming without verifying prerequisites
 ```bash
 # Immediately call POST /api/tasks/claim without checking files exist
 
@@ -334,7 +307,7 @@ POST /api/tasks/claim
    # Then proceed with claim
 ```
 
-### Mistake 3: Claiming then waiting for instructions
+### Mistake 2: Claiming then waiting for instructions
 ```bash
 # POST /api/tasks/claim succeeds
 #    Agent asks: "The task is claimed. What should I do next?"
@@ -343,23 +316,35 @@ POST /api/tasks/claim
 #    Agent immediately reads task details and begins implementation
 ```
 
-### Mistake 4: Prompting user for permission to run hooks
+### Mistake 3: Ignoring a `hook-bridge` before_doing failure
 ```bash
-# Agent says "Let me run the before_doing hook" then waits for user approval
-# Agent presents hook commands and pauses for confirmation
+# hook-bridge reports "before_doing failed (exit 1): git fetch origin"
+#    Agent ignores it and starts coding against stale code
 
-# Agent reads .stride.md before_doing section
-#    Agent immediately executes each command — no prompts
+# hook-bridge reports "before_doing failed (exit 1): git fetch origin"
+#    Agent fixes the git config/network, re-runs `git fetch origin`,
+#    THEN starts coding against current code
 ```
 
-### Mistake 5: Not fixing hook failures
-```bash
-# before_doing fails with merge conflicts
-#    Agent calls claim endpoint anyway
+### Mistake 4: Sending real timing values for `before_doing_result`
+```json
+WRONG (pretending the agent ran the hook itself):
+{
+  "before_doing_result": {
+    "exit_code": 0,
+    "output": "...full git pull output...",
+    "duration_ms": 450
+  }
+}
 
-# before_doing fails with merge conflicts
-#    Agent resolves conflicts, re-runs hook until success
-#    Only then calls claim endpoint
+RIGHT (placeholder — hook-bridge does the real work):
+{
+  "before_doing_result": {
+    "exit_code": 0,
+    "output": "Executed by Pi hook-bridge extension",
+    "duration_ms": 0
+  }
+}
 ```
 
 ## Implementation Workflow
@@ -368,12 +353,10 @@ POST /api/tasks/claim
 2. **Get next task** - Call GET /api/tasks/next
 3. **Review task** - Read all task details thoroughly
 4. **Check task completeness** - If key_files/testing_strategy/verification_steps missing, activate stride-enriching-tasks
-5. **Execute before_doing hook** - Run setup with timeout
-6. **Check exit code** - Must be 0
-7. **If failed:** Fix issues, re-run, do NOT proceed
-8. **Call claim endpoint** - Include before_doing_result
-9. **Begin implementation** - Start coding immediately
-10. **Work until complete** - Use stride-completing-tasks when done
+5. **Call claim endpoint** - Include placeholder `before_doing_result` (hook-bridge runs the real hook)
+6. **Watch for hook-bridge failure output** - If `before_doing` fails, fix the underlying issue and re-run setup manually
+7. **Begin implementation** - Start coding immediately
+8. **Work until complete** - Use stride-completing-tasks when done
 
 ## Quick Reference Card
 
@@ -382,11 +365,10 @@ POST /api/tasks/claim
 ├─ 2. Call GET /api/tasks/next
 ├─ 3. Review task details
 ├─ 4. Check completeness → if minimal, activate stride-enriching-tasks
-├─ 5. Read before_doing hook from .stride.md
-├─ 6. Execute before_doing (60s timeout, blocking)
-├─ 7. Hook succeeds? → Call POST /api/tasks/claim WITH result
-├─ 8. Hook fails? → Fix issues, retry
-└─ 9. Task claimed? → BEGIN IMPLEMENTATION IMMEDIATELY
+├─ 5. Call POST /api/tasks/claim with placeholder before_doing_result
+├─ 6. hook-bridge auto-runs before_doing on the tool_result
+├─ 7. Hook failure surfaced? → Fix underlying issue, re-run setup manually
+└─ 8. Task claimed → BEGIN IMPLEMENTATION IMMEDIATELY
 
 API ENDPOINT: POST /api/tasks/claim
 REQUIRED BODY: {
@@ -394,8 +376,8 @@ REQUIRED BODY: {
   "agent_name": "Pi",
   "before_doing_result": {
     "exit_code": 0,
-    "output": "Hook output here",
-    "duration_ms": 450
+    "output": "Executed by Pi hook-bridge extension",
+    "duration_ms": 0
   }
 }
 
@@ -450,6 +432,33 @@ The `POST /api/tasks/claim` body MUST include:
 | `identifier` | string | `"W47"` |
 | `agent_name` | string | `"Pi"` |
 | `before_doing_result` | object | See hook result format above |
+
+## Manual Hook Execution (FALLBACK — only when `hook-bridge` is not loaded)
+
+Use this section only when the `hook-bridge` extension is not loaded — e.g., you removed it from `package.json` `pi.extensions`, ran Pi with `--no-extensions`, or the extension failed to load at startup. In every other case, `hook-bridge` runs `before_doing` for you and the sections above apply.
+
+When operating without `hook-bridge`, you run the hook yourself before calling `/api/tasks/claim` and report the real result in the payload:
+
+1. Read the `## before_doing` section from `.stride.md`.
+2. Execute each command line one at a time via Bash — no permission prompts, no chaining with `&&`.
+3. Capture `exit_code`, `output`, and `duration_ms`:
+   ```bash
+   START_TIME=$(date +%s%3N)
+   OUTPUT=$(timeout 60 bash -c 'git pull origin main' 2>&1)
+   EXIT_CODE=$?
+   DURATION=$(( $(date +%s%3N) - START_TIME ))
+   ```
+4. If `EXIT_CODE != 0`: fix the issue, re-run, do **not** call `/api/tasks/claim`.
+5. On success, call `/api/tasks/claim` with the real `before_doing_result`:
+   ```json
+   "before_doing_result": {
+     "exit_code": 0,
+     "output": "Already up to date.\nAll dependencies are up to date",
+     "duration_ms": 450
+   }
+   ```
+
+The placeholder form (`output: "Executed by Pi hook-bridge extension"`) is **wrong** when `hook-bridge` is not loaded, because nothing actually runs the hook and the workspace setup is not performed.
 
 ---
 **References:** For the full field reference, see `api_schema` in the onboarding response (`GET /api/agent/onboarding`). For endpoint details, see the [API Reference](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/api/README.md).

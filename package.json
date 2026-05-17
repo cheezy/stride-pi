@@ -1,6 +1,6 @@
 {
   "name": "stride-pi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Task lifecycle skills and extensions for Stride kanban — Pi Coding Agent edition.",
   "license": "MIT",
   "author": "Jeff Morgan <cheezy@letstango.ca>",
@@ -11,7 +11,10 @@
   },
   "pi": {
     "skills": ["./skills"],
-    "extensions": ["./extensions"],
+    "extensions": [
+      "./extensions/subagent-dispatch",
+      "./extensions/hook-bridge"
+    ],
     "prompts": ["./prompts"]
   },
   "scripts": {

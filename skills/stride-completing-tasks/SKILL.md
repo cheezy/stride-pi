@@ -26,6 +26,23 @@ The completion API requires fields that are ONLY documented here:
 
 This skill enforces the proper completion workflow: execute BOTH `after_doing` AND `before_review` hooks BEFORE calling the complete endpoint.
 
+## How Hooks Fire (Default: Automatic via `hook-bridge`)
+
+As of stride-pi 0.3.0, the `hook-bridge` extension ships in the manifest. When loaded, it intercepts the `PATCH /api/tasks/:id/complete` curl and runs the lifecycle hooks on your behalf:
+
+- **`after_doing`** runs on the `tool_call` event (pre-curl). If it fails, `hook-bridge` returns `{ block: true, reason }` and the `/complete` curl is **vetoed** — the request never reaches the API. The block reason is surfaced to you with the failed command name, exit code, and (truncated) output so you can fix the issue and retry.
+- **`before_review`** runs on the `tool_result` event (post-curl, after `/complete` has already succeeded). Failures are logged via stderr and `ctx.ui.notify`; they do **not** modify the response, because the task is already complete.
+- **`after_review`** runs on the `tool_result` event for `PATCH /api/tasks/:id/mark_reviewed`. Same non-blocking semantics as `before_review`. The `.stride-env-cache` file is deleted after `after_review` returns.
+
+Because `hook-bridge` runs the real hooks, you supply placeholder values for `after_doing_result` and `before_review_result` in the `/complete` payload. The API requires the fields to be present; the extension does the actual execution:
+
+```json
+"after_doing_result":   {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0},
+"before_review_result": {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0}
+```
+
+If your Pi install does not load the extension (you removed it from the manifest, ran with `--no-extensions`, or the load failed), fall back to the **Manual Hook Execution** section near the end of this skill — there, you run the hooks yourself and report real results.
+
 ## ⚡ AUTOMATION NOTICE ⚡
 
 **The workflow IS the automation. Every step exists because skipping it caused failures.**
@@ -107,18 +124,14 @@ Skipping these steps is not faster — it produces lower quality work that takes
 
 ## The Complete Completion Process
 
-1. **Finish your work** - All implementation complete
+1. **Finish your work** - All implementation complete.
 2. **Pre-completion code review** - If medium+ complexity OR 2+ key_files, invoke the `task-reviewer` custom agent. Fix Critical/Important issues. Save output as `review_report`.
-3. **Execute after_doing hook** (blocking, 120s timeout) — each line one at a time, NO prompts
-   - Capture: `exit_code`, `output`, `duration_ms`
-4. **If after_doing fails:** FIX ISSUES, do NOT proceed
-5. **Execute before_review hook** (blocking, 60s timeout) — each line one at a time, NO prompts
-   - Capture: `exit_code`, `output`, `duration_ms`
-6. **If before_review fails:** FIX ISSUES, do NOT proceed
-7. **Both hooks succeeded?** Call `PATCH /api/tasks/:id/complete` WITH both results
-8. **Check needs_review flag:**
-   - `needs_review=true`: STOP and wait for human review
-   - `needs_review=false`: Execute after_review hook, **then AUTOMATICALLY activate stride-claiming-tasks**
+3. **Call `PATCH /api/tasks/:id/complete`** with all required fields, including placeholder `after_doing_result` and `before_review_result`. `hook-bridge` runs `after_doing` on the `tool_call` event (pre-curl) and will veto the request if it fails.
+4. **If `hook-bridge` vetoed the curl** with a blocked-by-after_doing reason: read the failure (failed command + truncated output in the block reason). Fix the issue, then retry the same `/complete` curl — `hook-bridge` re-runs `after_doing` on each attempt.
+5. **Curl succeeded?** `before_review` has already run on the post-curl `tool_result`. If it failed, the failure was logged but the task is already in Review.
+6. **Check needs_review flag in the response:**
+   - `needs_review=true`: STOP and wait for human review.
+   - `needs_review=false`: Call `PATCH /api/tasks/:id/mark_reviewed` (where applicable for your workflow); `hook-bridge` runs `after_review` on the `tool_result`. Then activate `stride-claiming-tasks` and continue the loop.
 
 ## Completion Workflow Flowchart
 
@@ -133,128 +146,53 @@ Medium+ OR 2+ key_files? ─YES→ Invoke task-reviewer custom agent
     ↓                                     ↓ NO            ↓
     ←─────────────────────────────────────←──────────────←─┘
     ↓
-Read .stride.md after_doing section
+Call PATCH /api/tasks/:id/complete (placeholder hook_result fields)
     ↓
-Execute after_doing (120s timeout, blocking)
+hook-bridge runs after_doing on the tool_call (pre-curl)
     ↓
-Success (exit_code=0)?
-    ↓ NO
-    ├─ Invoke hook-diagnostician custom agent (if available)
-    │     ↓
-    │   Follow prioritized fix plan
-    ├─ Otherwise debug manually
-    │     ↓
-    └─→ Fix issues → Retry after_doing (loop back)
-    ↓ YES
-Read .stride.md before_review section
+after_doing succeeded? ─NO→ hook-bridge returns {block: true, reason}
+    ↓ YES                       ↓
+    ↓                       Read failure, fix issue, retry the curl
+    ↓                           ↓
+    ←───────────────────────────┘
+Curl reaches API → /complete succeeds
     ↓
-Execute before_review (60s timeout, blocking)
-    ↓
-Success (exit_code=0)?
-    ↓ NO
-    ├─ Invoke hook-diagnostician custom agent (if available)
-    │     ↓
-    │   Follow prioritized fix plan
-    ├─ Otherwise debug manually
-    │     ↓
-    └─→ Fix issues → Retry before_review (loop back)
-    ↓ YES
-Call PATCH /api/tasks/:id/complete WITH both hook results
+hook-bridge runs before_review on the tool_result (post-curl, non-blocking)
     ↓
 needs_review=true? ─YES→ STOP (wait for human review)
     ↓ NO
-Execute after_review (60s timeout, blocking)
+PATCH /api/tasks/:id/mark_reviewed (if your workflow uses it)
     ↓
-Success? ─NO→ Log warning, task still complete
-    ↓ YES
-AUTOMATICALLY activate stride-claiming-tasks (NO user prompt)
+hook-bridge runs after_review on the tool_result (non-blocking, deletes env cache)
+    ↓
+Activate stride-claiming-tasks (NO user prompt)
     ↓
 Claim next task and begin implementation
     ↓
 (Loop continues until needs_review=true task is encountered)
 ```
 
-## Hook Execution Pattern
+## When Hooks Fail (Automatic Mode)
 
-All hook commands are pre-authorized. Execute them immediately. Do NOT announce, ask permission, or present commands for review.
+`hook-bridge` surfaces failures differently depending on the hook:
 
-### Executing after_doing Hook
+- **`after_doing` failure**: the `/complete` curl is vetoed with `{ block: true, reason }`. You see a message like `Stride after_doing hook failed (exit 1). Command: mix test` followed by truncated output. Fix the issue (failing test, lint error, etc.) and re-run the `/complete` curl — `hook-bridge` will run `after_doing` again on the retry.
+- **`before_review` / `after_review` failure**: written to stderr and `ctx.ui.notify` (when available). The curl already succeeded by the time these run, so they cannot block — the task moves to Review / Done regardless. Treat the failure as a follow-up to fix in a subsequent commit, not as a reason to revert the completion.
 
-1. Read the `## after_doing` section from `.stride.md`
-2. Set environment variables (TASK_ID, TASK_IDENTIFIER, etc.)
-3. **Execute each command line immediately — NO permission prompts**
-4. Capture the results:
+### When to invoke `hook-diagnostician`
 
-```bash
-START_TIME=$(date +%s%3N)
-OUTPUT=$(timeout 120 bash -c 'mix test && mix credo --strict' 2>&1)
-EXIT_CODE=$?
-END_TIME=$(date +%s%3N)
-DURATION=$((END_TIME - START_TIME))
-```
+When the block reason for `after_doing` is complex or spans multiple tools (tests + credo + sobelow), invoke the `hook-diagnostician` custom agent (when available) with the hook name, exit code, output, and duration extracted from the block reason. It returns a prioritized fix plan. Without it, follow the manual debugging steps below.
 
-5. Check exit code - MUST be 0 to proceed
+## Common Failure Patterns
 
-### Executing before_review Hook
-
-1. Read the `## before_review` section from `.stride.md`
-2. Set environment variables
-3. **Execute each command line immediately — NO permission prompts**
-4. Capture the results:
-
-```bash
-START_TIME=$(date +%s%3N)
-OUTPUT=$(timeout 60 bash -c 'gh pr create --title "$TASK_TITLE"' 2>&1)
-EXIT_CODE=$?
-END_TIME=$(date +%s%3N)
-DURATION=$((END_TIME - START_TIME))
-```
-
-5. Check exit code - MUST be 0 to proceed
-
-## When Hooks Fail
-
-### Custom Agent-Assisted Debugging
-
-When a blocking hook fails, invoke the `hook-diagnostician` custom agent **as the first step** before attempting manual fixes. The diagnostician parses the raw output, categorizes issues by severity, and returns a prioritized fix plan — saving time on complex multi-tool failures.
-
-**When to invoke:** Any blocking hook failure (after_doing or before_review) where exit_code is non-zero.
-
-**What to provide the diagnostician:**
-- `hook_name`: The hook that failed (e.g., `"after_doing"` or `"before_review"`)
-- `exit_code`: The non-zero exit code
-- `output`: The full stdout/stderr output from the hook
-- `duration_ms`: How long the hook ran before failing
-
-**What you get back:** A structured analysis with issues ordered by fix priority (compilation errors → git failures → test failures → security warnings → credo → formatting). Follow the diagnostician's fix order — fixing higher-priority issues often resolves lower-priority ones automatically.
-
-**Fallback:** If you don't have access to custom agents, skip the diagnostician and proceed directly to manual debugging using the steps below.
-
-### If after_doing fails:
-
-1. **DO NOT** call complete endpoint
-2. Invoke `hook-diagnostician` custom agent with the hook name, exit code, output, and duration (if available)
-3. Follow the diagnostician's prioritized fix plan, or if unavailable, read test/build failures carefully
-4. Fix the failing tests or build issues
-5. Re-run after_doing hook to verify fix
-6. Only call complete endpoint after success
-
-**Common after_doing failures:**
+**Common `after_doing` failures** (vetoed `/complete` curl):
 - Test failures → Fix tests first
 - Build errors → Resolve compilation issues
 - Linting errors → Fix code quality issues
 - Coverage below target → Add missing tests
 - Formatting issues → Run formatter
 
-### If before_review fails:
-
-1. **DO NOT** call complete endpoint
-2. Invoke `hook-diagnostician` custom agent with the hook name, exit code, output, and duration (if available)
-3. Follow the diagnostician's fix plan, or if unavailable, fix the issue manually
-4. Re-run before_review hook to verify
-5. Only proceed after success
-
-**Common before_review failures:**
+**Common `before_review` failures** (post-curl, non-blocking):
 - PR already exists → Check if you need to update existing PR
 - Authentication issues → Verify gh CLI is authenticated
 - Branch issues → Ensure you're on correct branch
@@ -262,7 +200,7 @@ When a blocking hook fails, invoke the `hook-diagnostician` custom agent **as th
 
 ## API Request Format
 
-After BOTH hooks succeed, call the complete endpoint:
+Call the complete endpoint with placeholder `after_doing_result` and `before_review_result` — `hook-bridge` runs the actual hooks. The API requires the fields to be present; the extension does the work:
 
 ```json
 PATCH /api/tasks/:id/complete
@@ -273,13 +211,13 @@ PATCH /api/tasks/:id/complete
   "review_report": "## Review Summary\n\nApproved — 0 issues found.\n\n### Acceptance Criteria\n| # | Criterion | Status |\n|---|-----------|--------|\n| 1 | Feature works | Met |",
   "after_doing_result": {
     "exit_code": 0,
-    "output": "Running tests...\n230 tests, 0 failures\nmix credo --strict\nNo issues found",
-    "duration_ms": 45678
+    "output": "Executed by Pi hook-bridge extension",
+    "duration_ms": 0
   },
   "before_review_result": {
     "exit_code": 0,
-    "output": "Creating pull request...\nPR #123 created: https://github.com/org/repo/pull/123",
-    "duration_ms": 2340
+    "output": "Executed by Pi hook-bridge extension",
+    "duration_ms": 0
   },
   "explorer_result": {
     "dispatched": false,
@@ -431,42 +369,21 @@ After the complete endpoint succeeds:
 
 ## Common Mistakes
 
-### Mistake 1: Calling complete before executing hooks
-```bash
-# curl -X PATCH /api/tasks/W47/complete
-#    Then running hooks afterward
-
-# Execute after_doing hook first
-   START_TIME=$(date +%s%3N)
-   OUTPUT=$(timeout 120 bash -c 'mix test' 2>&1)
-   EXIT_CODE=$?
-   # ...capture results
-
-   # Execute before_review hook second
-   START_TIME=$(date +%s%3N)
-   OUTPUT=$(timeout 60 bash -c 'gh pr create' 2>&1)
-   EXIT_CODE=$?
-   # ...capture results
-
-   # Then call complete WITH both results
-   curl -X PATCH /api/tasks/W47/complete -d '{...both results...}'
-```
-
-### Mistake 2: Only including after_doing result
+### Mistake 1: Only including after_doing result
 ```json
 WRONG:
 {
   "after_doing_result": {...}
 }
 
-RIGHT:
+RIGHT (both required — placeholders are fine with hook-bridge):
 {
-  "after_doing_result": {...},
-  "before_review_result": {...}
+  "after_doing_result":   {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0},
+  "before_review_result": {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0}
 }
 ```
 
-### Mistake 3: Continuing work after needs_review=true
+### Mistake 2: Continuing work after needs_review=true
 ```bash
 # PATCH /api/tasks/W47/complete returns needs_review=true
 #    Agent continues to claim next task
@@ -475,50 +392,58 @@ RIGHT:
 #    Agent STOPS and waits for human review
 ```
 
-### Mistake 4: Prompting user for permission to run hooks
+### Mistake 3: Ignoring an `after_doing` veto from `hook-bridge`
 ```bash
-# Agent says "Let me run the after_doing hooks" then waits for user approval
-# Agent presents hook commands and pauses for confirmation
+# /complete curl returns blocked: "after_doing failed (exit 1): mix test"
+#    Agent retries with --no-veto or fabricates a passing after_doing_result
 
-# Agent reads .stride.md after_doing section
-#    Agent immediately executes each command — no prompts
+# /complete curl returns blocked: "after_doing failed (exit 1): mix test"
+#    Agent reads the failure, fixes the failing test, retries the curl
+#    (hook-bridge runs after_doing again on the retry)
 ```
 
-### Mistake 5: Not fixing hook failures
-```bash
-# after_doing fails with test errors
-#    Agent calls complete endpoint anyway
+### Mistake 4: Sending real timing values for the hook_result fields
+```json
+WRONG (pretending the agent ran the hook itself):
+{
+  "after_doing_result": {
+    "exit_code": 0,
+    "output": "230 tests, 0 failures\nmix credo --strict: No issues found",
+    "duration_ms": 45678
+  }
+}
 
-# after_doing fails with test errors
-#    Agent fixes tests, re-runs hook until success
-#    Only then calls complete endpoint
+RIGHT (placeholder — hook-bridge does the real work):
+{
+  "after_doing_result": {
+    "exit_code": 0,
+    "output": "Executed by Pi hook-bridge extension",
+    "duration_ms": 0
+  }
+}
 ```
 
 ## Implementation Workflow
 
-1. **Complete all work** - Implementation finished
-2. **Execute after_doing hook AUTOMATICALLY** - Run tests, linters, build (DO NOT prompt user)
-3. **Check exit code** - Must be 0
-4. **If failed:** Fix issues, re-run, do NOT proceed
-5. **Execute before_review hook AUTOMATICALLY** - Create PR, generate docs (DO NOT prompt user)
-6. **Check exit code** - Must be 0
-7. **If failed:** Fix issues, re-run, do NOT proceed
-8. **Call complete endpoint** - Include BOTH hook results
-9. **Check needs_review flag** - Stop if true, continue if false
-10. **If false:** Execute after_review hook AUTOMATICALLY (DO NOT prompt user)
-11. **Claim next task** - Continue the workflow
+1. **Complete all work** - Implementation finished.
+2. **Pre-completion code review** - If medium+ complexity OR 2+ key_files, invoke `task-reviewer` and fix Critical/Important findings.
+3. **Call complete endpoint** - Include placeholder `after_doing_result` and `before_review_result` (hook-bridge runs the real hooks).
+4. **If the curl is vetoed** (after_doing failure surfaced as block reason) - Fix the underlying issue and retry the same curl.
+5. **Curl succeeded?** - The task is in Review (or Done, if no review needed). `before_review` already ran on the post-curl event; check the response for `needs_review`.
+6. **needs_review=true** → STOP, wait for human review.
+7. **needs_review=false** → Call `mark_reviewed` if applicable (hook-bridge runs `after_review` on the tool_result), then claim the next task.
 
 ## Quick Reference Card
 
 ```
 ├─ 1. Work is complete
-├─ 2. Execute after_doing (120s timeout, blocking)
-├─ 3. Hook fails? → FIX, retry, DO NOT proceed
-├─ 4. Execute before_review (60s timeout, blocking)
-├─ 5. Hook fails? → FIX, retry, DO NOT proceed
-├─ 6. Both succeed? → Call PATCH /api/tasks/:id/complete WITH both results
+├─ 2. (Optional) Pre-completion task-reviewer for medium+ / 2+ key_files
+├─ 3. Call PATCH /api/tasks/:id/complete with placeholder hook_result fields
+├─ 4. hook-bridge runs after_doing on the tool_call (pre-curl)
+├─ 5. Veto raised? → Read failure, fix issue, retry the curl
+├─ 6. Curl succeeds → before_review fires post-curl (non-blocking)
 ├─ 7. needs_review=true? → STOP, wait for human
-└─ 8. needs_review=false? → Execute after_review, claim next
+└─ 8. needs_review=false? → mark_reviewed (after_review fires), claim next
 
 API ENDPOINT: PATCH /api/tasks/:id/complete
 REQUIRED BODY: {
@@ -607,26 +532,26 @@ Reason enum: no_subagent_support, small_task_0_1_key_files, trivial_change_docs_
 
 ## Hook Result Format Reminder
 
-Both `after_doing_result` and `before_review_result` use the same format:
+Both `after_doing_result` and `before_review_result` use the same format and are required:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `exit_code` | integer | Yes | 0 for success, non-zero for failure |
-| `output` | string | Yes | stdout/stderr output from hook execution |
+| `output` | string | Yes | Description of what produced the result |
 | `duration_ms` | integer | Yes | How long the hook took in milliseconds |
+
+**With `hook-bridge` loaded (default):** supply the placeholder shape — the extension does the real work on the curl event.
+
+```json
+"after_doing_result":   {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0}
+"before_review_result": {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0}
+```
+
+**Without `hook-bridge` (Manual fallback):** supply the real values from `timeout 120 bash -c '...'` and the captured stdout/stderr.
 
 **WRONG — missing required fields:**
 ```json
 "after_doing_result": {"output": "tests passed"}
-```
-
-**RIGHT — all three fields present:**
-```json
-"after_doing_result": {
-  "exit_code": 0,
-  "output": "All 230 tests passed\nmix credo --strict: no issues",
-  "duration_ms": 45678
-}
 ```
 
 ## Arriving from stride-workflow
@@ -648,6 +573,41 @@ If you are using this skill standalone (not via the orchestrator), you should ha
 3. **`stride-subagent-workflow`** — To explore, plan, and review based on the decision matrix
 
 If you skipped any of these, the after_doing hook is likely to fail. Go back and verify.
+
+## Manual Hook Execution (FALLBACK — only when `hook-bridge` is not loaded)
+
+Use this section only when the `hook-bridge` extension is not loaded — e.g., you removed it from `package.json` `pi.extensions`, ran Pi with `--no-extensions`, or the extension failed to load at startup. In every other case, `hook-bridge` runs the hooks for you and the sections above apply.
+
+When operating without `hook-bridge`, you run the hooks yourself before calling `/api/tasks/:id/complete` and report the real results in the payload:
+
+1. **Run `after_doing` first** — read the `## after_doing` section from `.stride.md`, execute each command line one at a time via Bash (no permission prompts, no `&&` chaining), capture `exit_code`, `output`, and `duration_ms`:
+   ```bash
+   START_TIME=$(date +%s%3N)
+   OUTPUT=$(timeout 120 bash -c 'mix test --cover' 2>&1)
+   EXIT_CODE=$?
+   DURATION=$(( $(date +%s%3N) - START_TIME ))
+   ```
+   If `EXIT_CODE != 0`: fix the issue (failing test, lint error, etc.), re-run, do **not** call `/complete`.
+
+2. **Run `before_review` next** — same pattern with a 60 s timeout. On failure, fix and retry. Do **not** call `/complete` until both succeed.
+
+3. **Call `/complete`** with the real captured values:
+   ```json
+   "after_doing_result": {
+     "exit_code": 0,
+     "output": "All 230 tests passed\nmix credo --strict: no issues",
+     "duration_ms": 45678
+   },
+   "before_review_result": {
+     "exit_code": 0,
+     "output": "PR #123 created: https://github.com/org/repo/pull/123",
+     "duration_ms": 2340
+   }
+   ```
+
+4. **After `/complete` succeeds**, if `needs_review=false`, manually run the `## after_review` section from `.stride.md` before claiming the next task (60 s timeout, non-blocking — log failures but continue).
+
+The placeholder form (`output: "Executed by Pi hook-bridge extension"`) is **wrong** when `hook-bridge` is not loaded, because nothing actually runs the tests, formatter, credo, or sobelow — and the `/complete` curl will not be vetoed on real failures.
 
 ---
 **References:** For the full field reference, see `api_schema` in the onboarding response (`GET /api/agent/onboarding`). For endpoint details, see the [API Reference](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/api/README.md). For hook failure diagnosis, see the `hook-diagnostician` custom agent.
