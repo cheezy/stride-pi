@@ -5,6 +5,18 @@ All notable changes to the Stride extension for Pi Coding Agent will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-19
+
+### Changed
+
+- **`skills/stride-task-reviewer/SKILL.md`** — Rewrote Step 6 ("Produce Structured Review") and the Outputs section to require an unconditional fenced ```json block alongside the existing markdown prose. The block matches the canonical `reviewer_result` schema documented in [`stride/agents/task-reviewer.md`](https://github.com/cheezy/stride/blob/main/agents/task-reviewer.md) — `schema_version`, `summary`, `status`, `issue_counts`, `issues[]` (with `severity`/`category` enums), and `acceptance_criteria[]` (with `met`/`not_met` enum). Includes a verbatim worked `changes_requested` example. The prose summary line is preserved above the JSON block so orchestrator fallback paths that grep substring summaries continue to work when JSON parsing fails. The dispatched-shape `reviewer_result` now carries both the legacy summary fields and the structured fields parsed from the JSON block. No pi-specific schema variant introduced — the canonical schema is cited by path.
+- **`skills/stride-subagent-workflow/SKILL.md`** — Added an "Extracting the structured review block" subsection to Phase 3 (Code Review). The orchestrator now extracts the first fenced ```json fence from the reviewer's response and populates `reviewer_result` in the completion PATCH payload with both (a) the legacy summary fields (`summary`, `issues_found` from `sum(issue_counts.values())`, `acceptance_criteria_checked` from the length of the structured array) and (b) the structured fields verbatim (`status`, `issue_counts`, `issues`, `acceptance_criteria`, `schema_version`). Includes a Pi-specific note that the inline-skill model means the reviewer's response IS the current context (same first-```json-fence extraction applies), a worked example, and a documented fallback path that keeps older agent versions and parse failures working: substring-match the prose summary, omit structured fields from the PATCH (never empty placeholders), do not abort the completion.
+- **`package.json`** — Version bumped from `0.3.0` to `0.4.0`.
+
+### Source
+
+Ported from stride 1.13.0 (commits 9c19359 "Define structured JSON review-report schema in task-reviewer agent" and 8e94eca "Extract structured review block into reviewer_result PATCH payload"). Cross-plugin parity for Stride W685/W686 (implemented in stride-pi as W699). Note: the [0.3.0] hook-bridge release was tagged separately at HEAD~0 immediately before this commit to catch up the missing tag.
+
 ## [0.3.0] - 2026-05-17
 
 ### Added
