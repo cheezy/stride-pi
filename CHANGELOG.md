@@ -5,6 +5,26 @@ All notable changes to the Stride extension for Pi Coding Agent will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-05-20
+
+### Added
+
+- **Stride lifecycle skills (`skills/`)** — 11 skills covering the full Stride task lifecycle: `stride-workflow` (orchestrator), `stride-claiming-tasks`, `stride-completing-tasks`, `stride-creating-tasks`, `stride-creating-goals`, `stride-enriching-tasks`, `stride-subagent-workflow`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, and `stride-hook-diagnostician`. Ported from `stride-codex` and adapted for Pi's skill-activation model (auto-discovery via `~/.pi/agent/skills/` and `.pi/skills/`, plus `/skill:name` invocation). Sub-agents (`task-explorer`, `task-reviewer`, `task-decomposer`, `hook-diagnostician`) ship as inline Pi skills per ADR-001 model 2a — Pi has no separate sub-agent surface, so the orchestrator dispatches them by invoking the matching skill.
+- **`AGENTS.md`** — Pi-edition agent context that Pi auto-loads from `~/.pi/agent/AGENTS.md` and from `AGENTS.md` walked up the project tree. Documents Stride's API authorization model, when to invoke the workflow orchestrator, and the inline sub-agent dispatch convention.
+- **`install.sh`** — One-line installer (`curl … | bash`) with `--project` flag. Global mode copies skills to `~/.pi/agent/skills/` and `AGENTS.md` to `~/.pi/agent/AGENTS.md`; project mode targets `.pi/skills/` and project-root `AGENTS.md`. Idempotent — re-running upgrades in place.
+- **`extensions/hook-bridge/`** — Pi extension that intercepts the four Stride API curl calls (`claim`, `complete`, `mark_reviewed`, `unclaim`) on Pi's `tool_call` / `tool_result` events and runs the matching `.stride.md` hook section automatically. `after_doing` failure vetoes the `/complete` curl via `{ block: true, reason }`; the other three hooks run post-call and log failures without blocking. 120 s per-hook timeout with SIGTERM → SIGKILL escalation. Task metadata is cached to `.stride-env-cache` after a successful claim so subsequent hook commands see `$TASK_IDENTIFIER`, `$TASK_TITLE`, etc., and the cache is deleted after `after_review`. This turns the four Stride lifecycle hooks from advisory checks the agent had to remember into automatic quality gates — the most user-visible feature of the 1.0.0 release.
+- **`extensions/subagent-dispatch/`** — Pi extension implementing the `dispatch_agent` tool the orchestrator skill uses to dispatch the four inline sub-agent skills under the ADR-001 model 2a path.
+- **`README.md`** — Pi-specific install, setup, and usage walkthrough including the `.stride_auth.md` / `.stride.md` configuration contract.
+- **`docs/ADR-001-subagent-model.md`, `docs/ADR-002-hook-mechanism.md`** — Architecture decision records for the inline sub-agent skill model and the `pi.on(tool_call)` hook-bridge mechanism.
+
+### Changed
+
+- **`package.json`** — Version bumped from `0.4.0` to `1.0.0`. Marks the first stable release of stride-pi; the wire shape (Stride API contracts, `.stride.md` hook sections, `.stride-env-cache` format) is the supported public surface from this version forward.
+
+### Why this release
+
+`0.1.0`–`0.4.0` were the bring-up sequence: initial skill port, removal of the user-private `stride-development-guidelines` reference, hook-bridge introduction, and structured review-report emission. `1.0.0` is the first release that bundles all foundational components — skills, AGENTS.md, install.sh, sub-agent model, and the hook-bridge quality gate — into a single supported surface for Pi users. Future minor/patch versions track the wire-shape compatibility promise from here.
+
 ## [0.4.0] - 2026-05-19
 
 ### Changed
