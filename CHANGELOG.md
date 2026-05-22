@@ -5,6 +5,27 @@ All notable changes to the Stride extension for Pi Coding Agent will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-05-22
+
+### Added
+
+- **`extensions/hook-bridge/changed-files.ts`** — New helper module mirroring the bash `capture_changed_files` / `finalize_after_doing` helpers in `stride/hooks/stride-hook.sh` byte-identically for the on-the-wire encoding. Exports `captureChangedFiles(baseRef, cwd)` (tracked + staged + unstaged + untracked working-tree-relative diff with the 500-line truncation marker and binary placeholder from `docs/diff-contract.md`, `HEAD~1` fallback when `baseRef` is empty or unresolvable, `[]` on any git failure), `extractApiBase` / `extractToken` (regex extraction from the intercepted `/complete` curl), `putChangedFiles` (fetch-based `PUT /api/tasks/:id/changed_files` with body shape `{ changed_files: [...] }` per `docs/api/put_tasks_id_changed_files.md` — the bash hook sends a bare array, corrected here), `finalizeAfterDoing` (orchestrates capture → write `.stride-changed-files.json` → PUT, with try/catch at every layer so capture or upload failure cannot veto the agent `/complete` curl), and `readFinalizerEnv` (reads `TASK_ID` and `TASK_BASE_REF` directly from `.stride-env-cache` without touching the existing `TASK_ENV_KEYS` allowlist).
+- **`extensions/hook-bridge/changed-files.test.ts`** — 35 new `node:test` cases (51 total in the suite) covering every capture path, the truncation marker, both binary-file paths, the `HEAD~1` fallback, the no-changes empty return, the git-binary-missing fallback (via `PATH=/nonexistent`), URL/token regex extraction, all `putChangedFiles` swallow paths (404, 500, network rejection, missing-token / missing-task-id / missing-base skip), the full `finalizeAfterDoing` end-to-end with snapshot file write, and the `readFinalizerEnv` happy / missing / EISDIR paths. Fetch is mocked via a `stubFetch` helper that swaps `globalThis.fetch` in `beforeEach` and restores in `afterEach` — no real network traffic in any test.
+
+### Changed
+
+- **`extensions/hook-bridge/index.ts`** — In the `tool_call` / `after_doing` branch, after `runHook` succeeds (or no hook is configured) call `finalizeAfterDoing` inside a `try`/`catch` so capture and PUT failures cannot return `{ block: true, reason }`. The agent `/complete` curl now ships per-file diffs to `/api/tasks/:id/changed_files` automatically — no agent-side `--argjson cf` or `cat .stride-changed-files.json` required.
+- **`skills/stride-completing-tasks/SKILL.md`** — Added a new "Per-File Diff Capture (Automatic)" subsection under "How Hooks Fire" documenting the four-step capture-and-upload sequence the hook-bridge now performs, including the explicit pitfalls (no config-file reads, no curl rewriting, no new runtime env vars). Updates the `after_doing` bullet to point at the new subsection so agents know diff capture is handled for them.
+- **`package.json`** — Version bumped from `1.0.0` to `1.1.0`.
+
+### Why this release
+
+`1.0.0` shipped the foundational hook-bridge that automatically runs the four `.stride.md` lifecycle hooks for Pi users. This release puts stride-pi on the G161/G162 hook-PUT architecture day-one: after `after_doing` succeeds, the extension captures per-file diffs against the task base ref and PUTs them to `/api/tasks/:id/changed_files` as a fire-and-forget side effect — independent of, and immune to clobbering by, the agent `/complete` body. Pi-completed tasks now show inline diffs in the Stride review queue without any agent-side wiring. The deprecated G148/W719 agent-inline `changed_files` pattern is bypassed entirely for Pi users from this version forward.
+
+### Source
+
+Stride W741 (capture + PUT implementation) + W742 (test coverage). Cross-plugin parity for the main `stride` plugin G161/G162 hook-PUT rollout. No marketplace-pin step — `stride-pi` is not distributed via `stride-marketplace`.
+
 ## [1.0.0] - 2026-05-20
 
 ### Added
