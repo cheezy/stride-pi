@@ -16,7 +16,8 @@ export type StrideHookName =
   | "before_doing"
   | "after_doing"
   | "before_review"
-  | "after_review";
+  | "after_review"
+  | "after_goal";
 
 const CLAIM = /\/api\/tasks\/claim(\b|$|[?#])/;
 const COMPLETE = /\/api\/tasks\/[^/\s]+\/complete(\b|$|[?#])/;

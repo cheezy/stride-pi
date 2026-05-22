@@ -102,6 +102,31 @@ export default function (pi: ExtensionAPI): void {
     if (hook === "after_review") {
       deleteEnvCache(ctx.cwd);
     }
+
+    // --- After-goal routing (W797 / mirrors stride v1.17.1 W504) ---
+    // When the server bundles an `after_goal` entry in the response of
+    // /complete or /mark_reviewed (last-child-of-goal case), run the local
+    // `## after_goal` section as a blocking hook. Gated on:
+    //   1. Hook name — the post-phase hooks (before_review from /complete,
+    //      after_review from /mark_reviewed); these are the two routes that
+    //      can carry an after_goal entry in the response payload.
+    //   2. Primary success — if the primary hook failed, don't fire.
+    //   3. Response payload — must contain after_goal in its hooks array.
+    // Missing `## after_goal` in .stride.md is a clean no-op (runHook
+    // returns null when the section is absent / commands list is empty).
+    // The structured JSON shape on stdout matches the cross-plugin format
+    // so a Pi agent can forward {exit_code, output, duration_ms} via
+    // PATCH /api/tasks/:goal_id/after_goal.
+    if (
+      (hook === "before_review" || hook === "after_review") &&
+      (!result || result.success) &&
+      responseHasAfterGoal(event.content, event.details)
+    ) {
+      const agResult = await runHook("after_goal", ctx);
+      if (agResult) {
+        process.stdout.write(formatHookResultJson(agResult) + "\n");
+      }
+    }
   });
 }
 
@@ -427,6 +452,95 @@ function reportNonBlockingFailure(ctx: ExtensionContext, result: HookResult): vo
   } catch {
     // ctx.ui may be unavailable in -p / JSON mode
   }
+}
+
+/**
+ * Detect an `after_goal` entry in the response's `hooks` array. Mirrors
+ * stride-hook.sh:response_has_after_goal (W504) and opencode's
+ * responseHasAfterGoal (W793). Reuses the same raw strings that
+ * extractTaskEnvFromResult consumes: event.details.output (preferred,
+ * structured) or event.content (fallback raw stdout). Peels the
+ * Bash-tool {stdout: "<inner-json>"} wrapper if present, then checks
+ * the `hooks` array for an entry with name === "after_goal".
+ *
+ * Returns false on any parse failure — the after_goal routing is
+ * additive, so any uncertainty falls back to "no after_goal detected"
+ * which preserves the pre-W797 behavior.
+ */
+function responseHasAfterGoal(content: string, details: unknown): boolean {
+  const candidates: string[] = [];
+  if (details && typeof details === "object") {
+    const output = (details as { output?: unknown }).output;
+    if (typeof output === "string" && output.length > 0) candidates.push(output);
+  }
+  if (typeof content === "string" && content.length > 0) candidates.push(content);
+
+  for (const raw of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+
+      // Peel the Bash-tool wrapper if present
+      let payload: unknown = parsed;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { stdout?: unknown }).stdout === "string"
+      ) {
+        try {
+          payload = JSON.parse((parsed as { stdout: string }).stdout);
+        } catch {
+          payload = parsed;
+        }
+      }
+
+      if (!payload || typeof payload !== "object") continue;
+      const hooks = (payload as { hooks?: unknown }).hooks;
+      if (!Array.isArray(hooks)) continue;
+
+      if (
+        hooks.some(
+          (h) =>
+            h &&
+            typeof h === "object" &&
+            (h as { name?: unknown }).name === "after_goal",
+        )
+      ) {
+        return true;
+      }
+    } catch {
+      // Not JSON — try the next candidate
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Serialize a HookResult into the cross-plugin JSON shape stride-hook.sh
+ * emits on stdout for the after_goal lifecycle. The Pi agent reads this
+ * JSON and forwards {exit_code, output, duration_ms} to
+ * PATCH /api/tasks/:goal_id/after_goal. Field names are snake_case to
+ * match the Stride API contract; pi's internal HookResult uses camelCase,
+ * so this function does the translation.
+ */
+function formatHookResultJson(result: HookResult): string {
+  if (result.success) {
+    return JSON.stringify({
+      hook: result.hook,
+      status: "success",
+      exit_code: result.exitCode,
+      output: result.output,
+      duration_ms: result.durationMs,
+    });
+  }
+  return JSON.stringify({
+    hook: result.hook,
+    status: "failed",
+    exit_code: result.exitCode,
+    output: result.output,
+    failed_command: result.failedCommand ?? null,
+    duration_ms: result.durationMs,
+  });
 }
 
 function truncate(text: string, max: number): string {
