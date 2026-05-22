@@ -28,6 +28,7 @@ import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-a
 
 import { parseHookSection } from "./stride-md-parser.js";
 import { detectStrideHook, type StrideHookName } from "./curl-matcher.js";
+import { finalizeAfterDoing, readFinalizerEnv } from "./changed-files.js";
 
 const HOOK_TIMEOUT_MS = 120_000;
 const KILL_GRACE_MS = 5_000;
@@ -54,16 +55,28 @@ interface HookResult {
 export default function (pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("bash", event)) return;
-    const hook = detectStrideHook("pre", event.input.command);
+    const command = event.input.command;
+    const hook = detectStrideHook("pre", command);
     if (hook !== "after_doing") return;
 
     const result = await runHook(hook, ctx);
-    if (!result || result.success) return;
+    if (result && !result.success) {
+      return {
+        block: true,
+        reason: formatBlockReason(result),
+      };
+    }
 
-    return {
-      block: true,
-      reason: formatBlockReason(result),
-    };
+    // Hook succeeded (or no hook configured). Capture per-file diffs and
+    // fire-and-forget PUT them to /api/tasks/:id/changed_files. Fail-soft:
+    // any error here must not block the agent's /complete curl.
+    try {
+      const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
+      await finalizeAfterDoing({ cwd: ctx.cwd, command, taskId, baseRef });
+    } catch {
+      // intentional: never veto /complete on capture/upload failure
+    }
+    return;
   });
 
   pi.on("tool_result", async (event, ctx) => {

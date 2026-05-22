@@ -30,9 +30,20 @@ This skill enforces the proper completion workflow: execute BOTH `after_doing` A
 
 As of stride-pi 0.3.0, the `hook-bridge` extension ships in the manifest. When loaded, it intercepts the `PATCH /api/tasks/:id/complete` curl and runs the lifecycle hooks on your behalf:
 
-- **`after_doing`** runs on the `tool_call` event (pre-curl). If it fails, `hook-bridge` returns `{ block: true, reason }` and the `/complete` curl is **vetoed** — the request never reaches the API. The block reason is surfaced to you with the failed command name, exit code, and (truncated) output so you can fix the issue and retry.
+- **`after_doing`** runs on the `tool_call` event (pre-curl). If it fails, `hook-bridge` returns `{ block: true, reason }` and the `/complete` curl is **vetoed** — the request never reaches the API. The block reason is surfaced to you with the failed command name, exit code, and (truncated) output so you can fix the issue and retry. After a successful `after_doing`, `hook-bridge` captures per-file diffs and fire-and-forget PUTs them to `PUT /api/tasks/:id/changed_files` — the agent does **not** need to include `changed_files` in the `/complete` body. See **Per-File Diff Capture (Automatic)** below.
 - **`before_review`** runs on the `tool_result` event (post-curl, after `/complete` has already succeeded). Failures are logged via stderr and `ctx.ui.notify`; they do **not** modify the response, because the task is already complete.
 - **`after_review`** runs on the `tool_result` event for `PATCH /api/tasks/:id/mark_reviewed`. Same non-blocking semantics as `before_review`. The `.stride-env-cache` file is deleted after `after_review` returns.
+
+### Per-File Diff Capture (Automatic)
+
+On every successful `after_doing`, `hook-bridge` runs the equivalent of the main plugin's `capture_changed_files` / `finalize_after_doing` bash helpers:
+
+1. Builds a `[{path, diff}]` snapshot of every file that differs between `TASK_BASE_REF` (from `.stride-env-cache`, falling back to `HEAD~1`) and the agent's working tree — covering committed-since-base, staged, unstaged, and untracked-but-not-gitignored changes in a single pass.
+2. Truncates any per-file diff over 500 lines with the contract marker `[diff truncated at 500 lines]`. Binary files (tracked or untracked) carry the placeholder `[binary file — no diff captured]`. Both strings come from `docs/diff-contract.md` and must not be varied.
+3. Writes the JSON array to `.stride-changed-files.json` (best-effort; failures swallowed).
+4. Extracts the API base URL and Bearer token from the intercepted `/complete` curl, reads `TASK_ID` from `.stride-env-cache`, and PUTs `{ "changed_files": [...] }` to `<base>/api/tasks/<TASK_ID>/changed_files`. The request is fire-and-forget — network errors, 4xx, 5xx all swallow silently so the agent's `/complete` curl proceeds regardless.
+
+The agent therefore does **not** assemble a `changed_files` field, does **not** inline `cat .stride-changed-files.json`, and does **not** read `.stride_auth.md`. Everything required for the upload comes from the intercepted curl or the env cache.
 
 Because `hook-bridge` runs the real hooks, you supply placeholder values for `after_doing_result` and `before_review_result` in the `/complete` payload. The API requires the fields to be present; the extension does the actual execution:
 
