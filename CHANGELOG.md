@@ -5,6 +5,34 @@ All notable changes to the Stride extension for Pi Coding Agent will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-22
+
+### Added
+
+- **`## after_goal` hook section** — fifth `.stride.md` hook, fires after the parent goal's final child task completes. Blocking, same single-bash-fence parsing rule as the four existing hooks. The `stride-pi-hook-bridge` extension's `tool_result` handler now inspects the response payload of `/complete` and `/mark_reviewed` for an `after_goal` entry and executes the local `## after_goal` section as a blocking hook when present (W797). The extension emits structured JSON (`{hook, status, exit_code, output, failed_command?, duration_ms}`) on stdout so the Pi agent can forward the result via `PATCH /api/tasks/:goal_id/after_goal` to flip the parent goal to Done. Missing section is a clean no-op (back-compat). For users not installing the hook-bridge extension, the agent runs the after_goal lifecycle manually using the five-step procedure documented in `skills/stride-workflow/SKILL.md` Step 9.
+- **`responseHasAfterGoal(content, details)`** — new module in `extensions/hook-bridge/after-goal-detector.ts` (W797 implementation, W798 refactor for testability). Handles the three transport shapes that pi's existing `extractTaskEnvFromResult` handles: structured `details.output` (preferred), raw `content` (fallback), and the Bash-tool `{stdout: "<inner-json>"}` wrapper. Returns false on any parse failure — additive behavior preserves pre-W797 routing for the four existing hooks.
+- **`StrideHookName` widened** to include `"after_goal"` in `extensions/hook-bridge/curl-matcher.ts`. `detectStrideHook` still routes only the four URL-driven hooks; the new value flows in via the response-payload detector.
+- **`GOAL_*` env vars** — `GOAL_ID`, `GOAL_IDENTIFIER`, `GOAL_TITLE`, `GOAL_DESCRIPTION` forwarded into the `## after_goal` child process environment via the existing `buildHookEnv` machinery, sourced verbatim from the server-supplied `hook.env`. `BOARD_*`, `COLUMN_*`, `AGENT_NAME`, and `HOOK_NAME` remain present across all five hooks.
+- **`skills/stride-workflow/SKILL.md`** (W799) — Step 7 (Execute Hooks) opens with a Hooks Reference table listing all five hooks (timing/blocking/timeout/purpose), Hook Environment Variables matrix (`TASK_*` vs `GOAL_*` per hook), and Canonical Hook Examples block. Step 9 (Post-Completion Decision) gains a subsection covering the goal-Done transition with two explicit paths: **with-extension** (auto-fires via W797 routing) and **without-extension** (5-step manual procedure: detect → read → export → execute → POST). Examples explicitly note the hook is general-purpose (Slack notifications, artifact archival, release pipelines, project-level smoke tests are all valid uses).
+- **`AGENTS.md`** (W799) — Hook Execution section rewritten to describe both paths (with-extension auto-fires all 5 hooks, without-extension runs the manual procedure) with explicit after_goal coverage in both, plus cross-reference to SKILL.md Step 7+9.
+- **`extensions/hook-bridge/index.test.ts`** (W798) — 13 new tests in a `describe("responseHasAfterGoal", ...)` block covering: wrapped Bash-tool payload, raw API JSON payload, `details.output` preferred over content, fallback when `details.output` is missing, absent after_goal, empty hooks array, missing hooks key, malformed outer JSON, malformed inner stdout JSON (falls back cleanly), both candidates empty, non-string `details.output` skipped, defensive non-object entries in the hooks array, and candidate iteration order. Suite total: 64/64 pass (51 prior + 13 new) via `node --test --experimental-strip-types`.
+
+### Backward compatibility
+
+A `.stride.md` without a `## after_goal` section continues to work unchanged. The four existing hook routes produce behaviorally identical output (empirically confirmed by all 51 pre-existing tests passing unchanged after the new W797 routing block was added). Older agent runtimes that don't speak the after_goal protocol — including those that don't make the PATCH POST — are covered by the server-side grace-window worker, which promotes the goal to Done automatically with a synthetic attempt tagged `source: "after_goal_grace_worker"`.
+
+### Note on the v1.1.0 tag gap
+
+Commit `<sha> Release 1.1.0` was committed but never tagged on origin (latest origin tag was v1.0.0 before this release). This v1.2.0 release captures the prepared v1.1.0 work alongside the new after_goal feature, so installing v1.2.0 picks up both.
+
+### Migration
+
+Install via your normal stride-pi install flow. No `.stride.md`, `.stride_auth.md`, or `.gitignore` changes are required. To opt into the new hook, add a `## after_goal` section to `.stride.md`. Users with the `stride-pi-hook-bridge` extension installed get automatic execution; users without it follow the manual five-step procedure documented in `skills/stride-workflow/SKILL.md` Step 9.
+
+### Source
+
+G166 / W797 (extension hook-bridge routing in index.ts + curl-matcher.ts), W798 (13-test responseHasAfterGoal coverage in index.test.ts + extraction to after-goal-detector.ts), W799 (SKILL.md + AGENTS.md), W800 (this release). Pattern mirrors the Claude plugin's v1.17.1 release.
+
 ## [1.1.0] - 2026-05-22
 
 ### Added

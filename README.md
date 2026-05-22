@@ -75,9 +75,17 @@ git rebase origin/main
 ```bash
 git push origin main
 ```
+
+## after_goal
+
+```bash
+# Optional fifth hook (v1.2.0+) — fires after the parent goal's final
+# child task completes. Omit entirely for the back-compat no-op path.
+./scripts/notify-team.sh "$GOAL_IDENTIFIER" "$GOAL_TITLE"
+```
 ````
 
-Each section is optional. Pi has no automatic hook interception, so the agent reads and executes these commands directly per the skill instructions.
+Each section is optional. With the `stride-pi-hook-bridge` extension installed (default `install.sh`), all five hooks fire automatically — including `## after_goal` (v1.2.0+) when the server bundles an `after_goal` entry in the response of `/complete` or `/mark_reviewed` for the last-child-of-goal case. Without the extension, the agent reads and executes hooks directly per the skill instructions; for `## after_goal` the agent additionally POSTs the captured `{exit_code, output, duration_ms}` to `PATCH /api/tasks/:goal_id/after_goal` to flip the parent goal to Done. The hook receives `GOAL_ID` / `GOAL_IDENTIFIER` / `GOAL_TITLE` / `GOAL_DESCRIPTION` env vars from the server's `hook.env`, and is general-purpose — Slack notifications, artifact archival, release pipelines, project-level smoke tests are all valid uses, not just PR creation.
 
 ## Skill Activation
 
