@@ -29,6 +29,7 @@ import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-a
 import { parseHookSection } from "./stride-md-parser.js";
 import { detectStrideHook, type StrideHookName } from "./curl-matcher.js";
 import { finalizeAfterDoing, readFinalizerEnv } from "./changed-files.js";
+import { responseHasAfterGoal } from "./after-goal-detector.js";
 
 const HOOK_TIMEOUT_MS = 120_000;
 const KILL_GRACE_MS = 5_000;
@@ -452,67 +453,6 @@ function reportNonBlockingFailure(ctx: ExtensionContext, result: HookResult): vo
   } catch {
     // ctx.ui may be unavailable in -p / JSON mode
   }
-}
-
-/**
- * Detect an `after_goal` entry in the response's `hooks` array. Mirrors
- * stride-hook.sh:response_has_after_goal (W504) and opencode's
- * responseHasAfterGoal (W793). Reuses the same raw strings that
- * extractTaskEnvFromResult consumes: event.details.output (preferred,
- * structured) or event.content (fallback raw stdout). Peels the
- * Bash-tool {stdout: "<inner-json>"} wrapper if present, then checks
- * the `hooks` array for an entry with name === "after_goal".
- *
- * Returns false on any parse failure — the after_goal routing is
- * additive, so any uncertainty falls back to "no after_goal detected"
- * which preserves the pre-W797 behavior.
- */
-function responseHasAfterGoal(content: string, details: unknown): boolean {
-  const candidates: string[] = [];
-  if (details && typeof details === "object") {
-    const output = (details as { output?: unknown }).output;
-    if (typeof output === "string" && output.length > 0) candidates.push(output);
-  }
-  if (typeof content === "string" && content.length > 0) candidates.push(content);
-
-  for (const raw of candidates) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-
-      // Peel the Bash-tool wrapper if present
-      let payload: unknown = parsed;
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        typeof (parsed as { stdout?: unknown }).stdout === "string"
-      ) {
-        try {
-          payload = JSON.parse((parsed as { stdout: string }).stdout);
-        } catch {
-          payload = parsed;
-        }
-      }
-
-      if (!payload || typeof payload !== "object") continue;
-      const hooks = (payload as { hooks?: unknown }).hooks;
-      if (!Array.isArray(hooks)) continue;
-
-      if (
-        hooks.some(
-          (h) =>
-            h &&
-            typeof h === "object" &&
-            (h as { name?: unknown }).name === "after_goal",
-        )
-      ) {
-        return true;
-      }
-    } catch {
-      // Not JSON — try the next candidate
-    }
-  }
-
-  return false;
 }
 
 /**
