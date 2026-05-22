@@ -32,13 +32,20 @@ All Stride API calls are pre-authorized. Never ask the user for permission to ca
 
 ## Hook Execution
 
-**Pi has no automatic hook interception.** The agent must execute `.stride.md` hooks directly:
+**Two paths depending on whether the `stride-pi-hook-bridge` extension is installed:**
+
+**With the extension** (`extensions/hook-bridge/` registered as a Pi extension): the four existing hooks (`## before_doing`, `## after_doing`, `## before_review`, `## after_review`) fire automatically on the corresponding `tool_call` / `tool_result` events. The fifth hook (`## after_goal`, added in W797) fires automatically when the server bundles an `after_goal` entry in the response of `/complete` or `/mark_reviewed` (last-child-of-goal case). Structured JSON result emitted on stdout for the agent to forward via `PATCH /api/tasks/:goal_id/after_goal`.
+
+**Without the extension** (manual path): the agent must execute `.stride.md` hooks directly:
 
 1. Read the corresponding section from `.stride.md` (e.g., `## before_doing`)
 2. Execute each command line by line via shell — one at a time, not combined
 3. Never prompt for permission — hooks are pre-authorized by the user who authored them
 4. If a command fails, stop and fix the issue before proceeding
 5. Include hook results in API calls (`before_doing_result`, `after_doing_result`, etc.)
+6. For `## after_goal` specifically: detect the entry in the response's `hooks` array, export `GOAL_*` env vars from the response's `hook.env` block, run the section, then POST `{exit_code, output, duration_ms}` to `PATCH /api/tasks/:goal_id/after_goal`. See `stride-workflow` SKILL.md Step 7+9 for the full procedure.
+
+A missing `## after_goal` section is a clean no-op in either path — the server's grace-window worker promotes the goal automatically.
 
 Read `.stride_auth.md` for API credentials (URL, token).
 
