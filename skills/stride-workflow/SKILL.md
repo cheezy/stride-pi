@@ -191,6 +191,88 @@ The reviewer returns "Approved" or a list of issues (Critical, Important, Minor)
 - [ ] `patterns_to_follow` -- does your code match?
 - [ ] `testing_strategy` -- did you write the specified tests?
 
+Either way, the reviewer emits a one-line prose summary, the per-severity issue list, an acceptance-criteria table, and a fenced ```json block. **Save the reviewer's full response (prose + JSON block) verbatim** -- it becomes `review_report` in Step 8.
+
+### Extracting the structured review block
+
+After the reviewer returns, extract the first fenced ```json block from its response and use it to populate `reviewer_result` in your Step 8 payload. The same `reviewer_result` map carries both the legacy summary fields (kept for backwards compatibility with older Kanban deploys) and the structured fields (the actual deliverable for the review-queue per-section tiles — they live inside `reviewer_result`, never under a new top-level API key). The schema of that block is owned by the reviewer agent (`stride/agents/task-reviewer.md`, mirrored in `extensions/subagent-dispatch/agents/stride-task-reviewer.md`) -- do NOT duplicate the field definitions here.
+
+**Pi note:** when the reviewer ran inline (no `dispatch_agent`), its response IS your current context — parse the JSON block you just emitted. When dispatched, parse the subprocess's returned block. Either way the first ```json fence is the source.
+
+**Extraction pattern** — extract the first ```json fence and parse it (adapt to your Pi runtime; e.g. a regex over the reviewer text):
+
+```python
+import re, json
+m = re.search(r'```json\n(.*?)\n```', reviewer_response, re.DOTALL)
+structured = json.loads(m.group(1))  # the parsed schema
+```
+
+**Field mapping into `reviewer_result`:**
+
+- Legacy fields (always populated):
+  - `summary` ← `structured.summary`
+  - `issues_found` ← `sum(structured.issue_counts.values())`
+  - `acceptance_criteria_checked` ← `len(structured.acceptance_criteria)`
+  - `dispatched: true`, `duration_ms: <wall-clock ms>`
+- Structured fields (copied verbatim from the parsed JSON, but **omit any key the agent did not emit** — never send empty placeholders):
+  - `status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, `schema_version`
+
+**Worked example.** Given the reviewer's fenced block below…
+
+````text
+Approved
+...prose summary + issue list + acceptance-criteria table...
+
+```json
+{
+  "schema_version": "1.3",
+  "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
+  "status": "approved",
+  "issue_counts": {"critical": 0, "important": 0, "minor": 0},
+  "issues": [],
+  "acceptance_criteria": [
+    {"criterion": "All task positions recalculate when a card moves columns", "status": "met", "evidence": "lib/kanban/tasks.ex:142-168"}
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "Move + broadcast paths covered by tests."},
+  "patterns": {"status": "passed", "note": "Mirrors the existing reorder pattern."},
+  "pitfalls": {"status": "passed", "note": "None of the 4 listed pitfalls violated."},
+  "security_considerations": {"status": "passed", "note": "Move query scoped to the current user's board; no new input or injection surface."}
+}
+```
+````
+
+…the resulting `reviewer_result` value in the Step 8 payload is:
+
+```json
+"reviewer_result": {
+  "dispatched": true,
+  "duration_ms": 29560,
+  "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
+  "issues_found": 0,
+  "acceptance_criteria_checked": 1,
+  "schema_version": "1.3",
+  "status": "approved",
+  "issue_counts": {"critical": 0, "important": 0, "minor": 0},
+  "issues": [],
+  "acceptance_criteria": [
+    {"criterion": "All task positions recalculate when a card moves columns", "status": "met", "evidence": "lib/kanban/tasks.ex:142-168"}
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "Move + broadcast paths covered by tests."},
+  "patterns": {"status": "passed", "note": "Mirrors the existing reorder pattern."},
+  "pitfalls": {"status": "passed", "note": "None of the 4 listed pitfalls violated."},
+  "security_considerations": {"status": "passed", "note": "Move query scoped to the current user's board; no new input or injection surface."}
+}
+```
+
+**Fallback when JSON parsing fails.** If no ```json block is present, or the block does not parse, do not abort the completion. Instead:
+
+1. Fall back to substring-matching the prose summary line ("Approved" or "N issues found (X critical, Y important, Z minor)") to populate `reviewer_result.summary` and `reviewer_result.issues_found`.
+2. Set `acceptance_criteria_checked` from the count of criterion lines in the prose acceptance-criteria table, or `0` if none can be parsed.
+3. **Omit** every structured field (`status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, `schema_version`) from the payload — do NOT send empty placeholders. The Kanban server tolerates their absence.
+4. Keep `dispatched: true` and `duration_ms` as captured. The fallback produces a degraded-but-valid completion, never a hard failure.
+
 ### Small tasks (0-1 key_files): Skip review. Omit `review_report` from completion.
 
 ---
