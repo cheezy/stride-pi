@@ -22,7 +22,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-agent";
 
@@ -44,6 +44,7 @@ const TASK_ENV_KEYS = [
   "TASK_STATUS",
   "TASK_COMPLEXITY",
   "TASK_PRIORITY",
+  "TASK_BASE_REF",
 ] as const;
 
 type TaskEnv = Partial<Record<(typeof TASK_ENV_KEYS)[number], string>>;
@@ -95,6 +96,11 @@ export default function (pi: ExtensionAPI): void {
     if (hook === "before_doing") {
       const taskEnv = extractTaskEnvFromResult(event.content, event.details);
       if (Object.keys(taskEnv).length > 0) {
+        // Anchor changed-files to the claim-time HEAD (computed now, not at
+        // completion). An empty ref is skipped by writeEnvCache, leaving
+        // changed-files to fall back to HEAD~1.
+        const baseRef = captureBaseRef(ctx.cwd);
+        if (baseRef) taskEnv.TASK_BASE_REF = baseRef;
         writeEnvCache(ctx.cwd, taskEnv);
       }
     }
@@ -337,6 +343,29 @@ function deleteEnvCache(cwd: string): void {
   }
 }
 
+/**
+ * Capture the commit HEAD points at when the task is claimed (before_doing).
+ * changed-files anchors its per-file diff to this baseline (via TASK_BASE_REF in
+ * the env cache) so a multi-commit task reports the full claim->completion delta
+ * instead of only the last commit. Mirrors stride-hook.sh, which runs
+ * `git rev-parse HEAD` at claim and writes TASK_BASE_REF. Best-effort: returns
+ * "" on any git failure, which makes resolveBase fall back to HEAD~1.
+ */
+function captureBaseRef(cwd: string): string {
+  try {
+    const result = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf-8",
+    });
+    if (result.status === 0 && typeof result.stdout === "string") {
+      return result.stdout.trim();
+    }
+  } catch {
+    // best effort — absent a base ref, changed-files falls back to HEAD~1
+  }
+  return "";
+}
+
 function readBashCommand(input: unknown): string | null {
   if (!input || typeof input !== "object") return null;
   const cmd = (input as Record<string, unknown>).command;
@@ -412,20 +441,24 @@ function extractTaskObject(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
+// Maps the env keys that derive from the claim API response. TASK_BASE_REF is
+// NOT here — it is computed locally from git at claim time (see captureBaseRef),
+// not read from the task object.
+const TASK_FIELD_MAP = {
+  TASK_ID: "id",
+  TASK_IDENTIFIER: "identifier",
+  TASK_TITLE: "title",
+  TASK_STATUS: "status",
+  TASK_COMPLEXITY: "complexity",
+  TASK_PRIORITY: "priority",
+} as const;
+
 function taskToEnv(task: Record<string, unknown>): TaskEnv {
   const env: TaskEnv = {};
-  const mapping: Record<(typeof TASK_ENV_KEYS)[number], string> = {
-    TASK_ID: "id",
-    TASK_IDENTIFIER: "identifier",
-    TASK_TITLE: "title",
-    TASK_STATUS: "status",
-    TASK_COMPLEXITY: "complexity",
-    TASK_PRIORITY: "priority",
-  };
-  for (const key of TASK_ENV_KEYS) {
-    const value = task[mapping[key]];
+  for (const [key, field] of Object.entries(TASK_FIELD_MAP)) {
+    const value = task[field];
     if (value === undefined || value === null) continue;
-    env[key] = String(value);
+    env[key as keyof typeof TASK_FIELD_MAP] = String(value);
   }
   return env;
 }

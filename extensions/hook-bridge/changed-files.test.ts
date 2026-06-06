@@ -602,3 +602,60 @@ describe("readFinalizerEnv", () => {
     }
   });
 });
+
+describe("changed-files anchors to the claim-time TASK_BASE_REF", () => {
+  it("with the claim-time base ref, reports the full claim->completion delta (more than one commit)", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed"); // HEAD at claim time
+      // Two commits since the claim, each adding a different file.
+      fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+      gitCommit(dir, "add a");
+      fs.writeFileSync(path.join(dir, "b.txt"), "b\n");
+      gitCommit(dir, "add b");
+
+      // Anchored to the claim baseline → the FULL delta (both files).
+      const anchored = captureChangedFiles(base, dir).map((r) => r.path).sort();
+      assert.deepEqual(anchored, ["a.txt", "b.txt"]);
+
+      // Without a base ref, resolveBase falls back to HEAD~1 and sees only the
+      // last commit — under-reporting the true claim->completion delta. This is
+      // exactly the bug TASK_BASE_REF persistence fixes.
+      const fallback = captureChangedFiles("", dir).map((r) => r.path).sort();
+      assert.deepEqual(fallback, ["b.txt"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips TASK_BASE_REF through the env cache and anchors the diff to it", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      // .stride-env-cache is gitignored in real repos, so it never shows up in
+      // the changed-files diff; mirror that here.
+      fs.writeFileSync(path.join(dir, ".gitignore"), ".stride-env-cache\n");
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed");
+      fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+      gitCommit(dir, "add a");
+      fs.writeFileSync(path.join(dir, "b.txt"), "b\n");
+      gitCommit(dir, "add b");
+
+      // Persist the claim-time base ref exactly as writeEnvCache would.
+      fs.writeFileSync(
+        path.join(dir, ".stride-env-cache"),
+        `TASK_ID='3431'\nTASK_BASE_REF='${base}'\n`,
+      );
+      const { baseRef } = readFinalizerEnv(dir);
+      assert.equal(baseRef, base); // round-trip through the cache
+
+      const files = captureChangedFiles(baseRef ?? "", dir).map((r) => r.path).sort();
+      assert.deepEqual(files, ["a.txt", "b.txt"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
