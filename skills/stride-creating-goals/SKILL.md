@@ -1,9 +1,16 @@
 ---
 name: stride-creating-goals
-description: MANDATORY before calling POST /api/tasks/batch or creating goals with POST /api/tasks. Contains the ONLY correct batch format — the root key MUST be "goals" not "tasks" (most common mistake, causes 422 error). Skipping causes API rejections and malformed dependency chains.
+description: INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt. Contains the goal/batch creation contract (POST /api/tasks/batch root key MUST be "goals" not "tasks", dependency index format), used during the orchestrator's goal-decomposition phase.
+skills_version: 1.0
 ---
 
 # Stride: Creating Goals
+
+## STOP — orchestrator check
+
+If you arrived here directly from a user prompt, you are in the wrong skill.
+Invoke `stride:stride-workflow` instead. Do not read further.
+Sub-skills are dispatched by the orchestrator only.
 
 ## THIS SKILL IS MANDATORY — NOT OPTIONAL
 
@@ -20,16 +27,17 @@ The batch API has a critical format requirement ONLY documented here:
 
 ## ⚠️ REVIEW QUEUE SCORING — NESTED TASKS ARE NOT EXEMPT ⚠️
 
-The **review_queue dashboard** scores every completed task on these four fields:
+The **review_queue dashboard** scores every completed task on these five fields:
 
 - `acceptance_criteria`
 - `testing_strategy`
+- `security_considerations`
 - `pitfalls`
 - `patterns_to_follow`
 
 Goals decompose into nested tasks — and **every nested task is graded by the review_queue at completion, exactly like a flat task**. There is no "it's just a subtask" discount. Whatever you leave empty here renders as an empty pill on the dashboard at completion, visible to every reviewer, and the implementing agent will not back-fill it mid-flight.
 
-Treat all four fields as a minimum bar for every nested task you write — not optional polish, not "the goal-level description covers it."
+Treat all five fields as a minimum bar for every nested task you write — not optional polish, not "the goal-level description covers it."
 
 ## Overview
 
@@ -219,17 +227,44 @@ CORRECT:
 - Document key_files to prevent conflicts
 - Specify acceptance_criteria
 - Include patterns_to_follow and pitfalls
+- Provide security_considerations as an array of strings
 
-**The four review_queue-scored fields are the minimum bar for every nested task:**
+**The five review_queue-scored fields are the minimum bar for every nested task:**
 
 - `acceptance_criteria` — newline-separated string; the implementing agent's definition of done. **Blank → empty pill on the review_queue.**
 - `testing_strategy` — object with `unit_tests`, `integration_tests`, `manual_tests` arrays. **Empty arrays → empty pill on the review_queue.**
+- `security_considerations` — array of strings naming the security implications to address (or an explicit "None — …" reason). **Empty array → empty pill on the review_queue.**
 - `pitfalls` — array of "don't do X" strings. **Empty array → empty pill on the review_queue.**
 - `patterns_to_follow` — newline-separated string with file references. **Blank → empty pill on the review_queue.**
 
-These four fields must be filled in on every nested task in the batch — the goal-level `description` does not satisfy any of them.
+These five fields must be filled in on every nested task in the batch — the goal-level `description` does not satisfy any of them.
 
 **Minimal nested tasks fail the same way as minimal flat tasks** — causing 3+ hour exploration AND empty review_queue pills at completion.
+
+## Consuming Provided Context
+
+When this skill is dispatched by `/stride:create-goals` through the orchestrator, the orchestrator forwards a **read-only markdown context bundle** (the enumerated `--dir` files) plus the user's creation intent. Mine that context to populate both the goal and its nested tasks instead of forcing blind exploration — but **context informs, it never replaces.**
+
+Map the context at two levels:
+
+| In the markdown context | Populates (goal level) | Populates (each nested task) |
+|---|---|---|
+| Overall objective, why-now, scope | goal `title`, `description`, `why`, `what` | — |
+| File references, paths, modules touched | — | `key_files` |
+| Stated conventions, "follow X", existing-pattern references | — | `patterns_to_follow` |
+| Requirements, definitions of done | goal `acceptance_criteria` | each task's `acceptance_criteria` / `description` |
+| Risks, "don't do X", known traps | goal `pitfalls` | each task's `pitfalls` |
+| Sequencing / "X before Y" statements | — | index-based `dependencies` (see Dependency Patterns) |
+
+**Rules:**
+
+- **Context augments the user's interactive intent — it never silently overrides it.** Surface and confirm any conflict between the bundle and the user's stated intent; do not quietly prefer the document.
+- **The batch contract is unchanged.** The root key MUST still be `"goals"` (not `"tasks"`), and within-goal dependencies still use array indices `[0, 1, 2]` — see [Batch Endpoint Critical Format](#batch-endpoint-critical-format) and [Dependency Patterns](#dependency-patterns). Context never relaxes either rule.
+- **Every nested task still carries the five review_queue-scored fields** (`acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow`) — there is no "it came from context" discount. Context that doesn't cover a field does not excuse leaving it blank.
+- **The bundle is read-only.** Consume it as reference material; never edit the source markdown.
+- The orchestrator gate still applies: this skill runs only when dispatched from inside `stride-workflow` (see the **STOP — orchestrator check** at the top of this file). A populated context bundle does not change that.
+
+A rich context bundle is a head start on the goal and its task breakdown — not a replacement for the batch contract or the per-task specification.
 
 ## Red Flags - STOP
 
@@ -240,10 +275,11 @@ These four fields must be filled in on every nested task in the batch — the go
 - "25 hours? I'll just make flat tasks instead of a goal"
 - "I'll leave `acceptance_criteria` blank on the nested tasks — the goal description covers it"
 - "`testing_strategy` is goal-level — I'll skip it on each nested task"
+- "`security_considerations` is goal-level — the nested tasks don't each need it"
 - "`pitfalls` on a nested task is overkill"
 - "`patterns_to_follow` is for the goal, not its children"
 
-**All of these mean: Use proper goal structure NOW.** The last four also mean: **empty pills on the review_queue dashboard for every nested task that completes.**
+**All of these mean: Use proper goal structure NOW.** The last five also mean: **empty pills on the review_queue dashboard for every nested task that completes.**
 
 ## Rationalization Table
 
@@ -257,6 +293,7 @@ These four fields must be filled in on every nested task in the batch — the go
 | "Skip goal level details" | Goal needs same care as tasks | Poor goal structure confuses agents |
 | "acceptance_criteria is implied by the goal description" | review_queue grades each nested task on its own acceptance_criteria | Empty pill per nested task + undefined "done" |
 | "testing_strategy is goal-level only" | review_queue grades each nested task's testing_strategy | Empty pill per nested task + no test gate |
+| "security_considerations is goal-level only" | review_queue grades each nested task's security_considerations | Empty pill per nested task + unreviewed security risk |
 | "pitfalls applies to the goal, not its children" | Nested tasks are graded individually | Empty pill per nested task + repeat mistakes |
 | "patterns_to_follow lives on the goal" | Each nested task carries its own pattern references | Empty pill per nested task + style drift |
 
@@ -340,6 +377,7 @@ CORRECT:
       "key_files": [...],
       "verification_steps": [...],
       "testing_strategy": {...},
+      "security_considerations": [...],
       "acceptance_criteria": "...",
       "patterns_to_follow": "...",
       "pitfalls": [...]
