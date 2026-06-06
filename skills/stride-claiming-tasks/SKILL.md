@@ -1,9 +1,16 @@
 ---
 name: stride-claiming-tasks
-description: MANDATORY before calling GET /api/tasks/next or POST /api/tasks/claim. Contains required before_doing hook execution pattern and claim request format. The claim endpoint REQUIRES before_doing_result which is ONLY documented here — skipping causes API rejection. Activate for ANY task claiming or discovery operation.
+description: INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt. Contains the claim API contract (POST /api/tasks/claim payload and required before_doing_result shape) and the before_doing hook execution pattern, used during the orchestrator's claim phase.
+skills_version: 1.0
 ---
 
 # Stride: Claiming Tasks
+
+## STOP — orchestrator check
+
+If you arrived here directly from a user prompt, you are in the wrong skill.
+Invoke `stride:stride-workflow` instead. Do not read further.
+Sub-skills are dispatched by the orchestrator only.
 
 ## THIS SKILL IS MANDATORY — NOT OPTIONAL
 
@@ -262,6 +269,7 @@ POST /api/tasks/claim
 {
   "identifier": "W47",
   "agent_name": "Pi",
+  "skills_version": "1.0",
   "before_doing_result": {
     "exit_code": 0,
     "output": "Executed by Pi hook-bridge extension",
@@ -271,6 +279,8 @@ POST /api/tasks/claim
 ```
 
 **Critical:** `before_doing_result` is REQUIRED. The API will reject requests without it. The placeholder above satisfies the schema; the real exit code and output are produced by `hook-bridge` after the curl completes.
+
+**Send `skills_version`** (from this SKILL.md's frontmatter, currently `"1.0"`) with every claim so the server can detect stale skills. If a claim response includes `skills_update_required`, run `/plugin update stride` (or the equivalent stride-pi update) and retry the claim.
 
 ## Red Flags - STOP
 
@@ -374,6 +384,7 @@ API ENDPOINT: POST /api/tasks/claim
 REQUIRED BODY: {
   "identifier": "W47",
   "agent_name": "Pi",
+  "skills_version": "1.0",
   "before_doing_result": {
     "exit_code": 0,
     "output": "Executed by Pi hook-bridge extension",
