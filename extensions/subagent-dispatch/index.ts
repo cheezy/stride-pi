@@ -1,9 +1,9 @@
 /**
  * stride-pi subagent-dispatch extension
  *
- * Registers a `dispatch_agent(agent, prompt)` tool that runs Stride's four
+ * Registers a `dispatch_agent(agent, prompt)` tool that runs Stride's five
  * specialized agents (task-explorer, task-reviewer, task-decomposer,
- * hook-diagnostician) in isolated `pi -p` subprocesses — providing
+ * hook-diagnostician, task-enricher) in isolated `pi -p` subprocesses — providing
  * parallelism and context isolation equivalent to sibling-plugin subagents
  * (Claude Code, Codex CLI, Gemini CLI).
  *
@@ -30,15 +30,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@sinclair/typebox";
-
-const AGENT_NAMES = [
-  "stride-task-explorer",
-  "stride-task-reviewer",
-  "stride-task-decomposer",
-  "stride-hook-diagnostician",
-] as const;
-
-type AgentName = (typeof AGENT_NAMES)[number];
+import { AGENT_NAMES } from "./agents-registry.js";
 
 const DispatchParams = Type.Object({
   agent: Type.Union(AGENT_NAMES.map((n) => Type.Literal(n))),
@@ -64,11 +56,11 @@ export default function (pi: ExtensionAPI): void {
     name: "dispatch_agent",
     label: "Dispatch Stride Subagent",
     description:
-      "Run one of the four Stride subagents (task-explorer, task-reviewer, task-decomposer, hook-diagnostician) in an isolated `pi -p` subprocess with its own context window. Returns the subagent's structured output as a string.",
+      "Run one of the five Stride subagents (task-explorer, task-reviewer, task-decomposer, hook-diagnostician, task-enricher) in an isolated `pi -p` subprocess with its own context window. Returns the subagent's structured output as a string.",
     promptSnippet:
       "dispatch_agent({agent, prompt}) — isolated run of a Stride subagent in a subprocess",
     promptGuidelines: [
-      "Use dispatch_agent for exploration (agent: 'stride-task-explorer'), code review (agent: 'stride-task-reviewer'), goal decomposition (agent: 'stride-task-decomposer'), and hook failure diagnosis (agent: 'stride-hook-diagnostician') — per the decision matrix in the stride-subagent-workflow skill.",
+      "Use dispatch_agent for exploration (agent: 'stride-task-explorer'), code review (agent: 'stride-task-reviewer'), goal decomposition (agent: 'stride-task-decomposer'), hook failure diagnosis (agent: 'stride-hook-diagnostician'), and task enrichment (agent: 'stride-task-enricher') — per the decision matrix in the stride-subagent-workflow skill.",
       "Each dispatch runs in an isolated subprocess and does not affect your main context window beyond the returned result string.",
       "Pass the full task metadata (key_files, patterns_to_follow, acceptance_criteria, etc.) as part of the prompt — the subprocess has no other way to see it.",
     ],
