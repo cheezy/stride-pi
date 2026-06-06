@@ -1,15 +1,23 @@
 ---
 name: stride-subagent-workflow
-description: MANDATORY after claiming any Stride task. Contains the decision matrix for invoking the stride-task-explorer, stride-task-reviewer, stride-task-decomposer, and stride-hook-diagnostician inline skills. Skipping means no codebase exploration before implementation and no code review before completion — causing wrong approaches and missed acceptance criteria. Activate IMMEDIATELY after claim succeeds, BEFORE writing any code.
+description: INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt. Contains the Pi subagent decision matrix (when to dispatch or inline-run stride-task-enricher, stride-task-explorer, stride-task-reviewer, stride-task-decomposer, stride-hook-diagnostician), used during the orchestrator's enrichment, exploration, and review phases.
+skills_version: 1.0
 ---
 
 # Stride: Subagent Workflow (inline on Pi)
+
+## STOP — orchestrator check
+
+If you arrived here directly from a user prompt, you are in the wrong skill.
+Invoke `stride:stride-workflow` instead. Do not read further.
+Sub-skills are dispatched by the orchestrator only.
 
 ## THIS SKILL IS MANDATORY AFTER CLAIMING — NOT OPTIONAL
 
 **If you just claimed a Stride task and are about to start implementation, you MUST activate this skill first.**
 
 This skill contains the decision matrix that determines which inline skills to invoke:
+- `stride-task-enricher` — Enrich a sparse task with key_files, patterns, testing_strategy, security_considerations, etc. **before claiming**
 - `stride-task-explorer` — Read key_files and discover patterns before coding
 - `stride-task-reviewer` — Review your changes against acceptance criteria before completion
 - `stride-task-decomposer` — Break goals into properly-sized subtasks
@@ -40,7 +48,7 @@ Invoke the tool directly:
 
 ```
 dispatch_agent({
-  agent: "stride-task-explorer",   // or stride-task-reviewer / -decomposer / -hook-diagnostician
+  agent: "stride-task-explorer",   // or stride-task-enricher / -reviewer / -decomposer / -hook-diagnostician
   prompt: "<task metadata + any instructions — include key_files, patterns_to_follow, acceptance_criteria>"
 })
 ```
@@ -53,6 +61,7 @@ If `dispatch_agent` is not available (extension not installed, older Pi version,
 
 | Role | Inline skill | When |
 |---|---|---|
+| Enrichment | `stride-enriching-tasks` | **Before claim**, when the task is sparse (empty `key_files` / missing `testing_strategy` / empty `verification_steps` / blank `acceptance_criteria`) |
 | Exploration | `stride-task-explorer` | After claim, when complexity is medium+ or `key_files` has 2+ entries |
 | Code review | `stride-task-reviewer` | After implementation, before `after_doing`, same threshold |
 | Goal decomposition | `stride-task-decomposer` | When a claimed task is a goal or large-undecomposed |
@@ -106,6 +115,30 @@ Use this matrix to determine which inline skills to invoke based on task attribu
 - If the task is a **goal** or has **large complexity without child tasks** or a **25+ hour estimate**: invoke the decomposer first. The decomposer breaks it into claimable child tasks — you don't implement goals directly.
 - If the task is small with 0-1 key_files, skip all inline skills and code directly.
 - Otherwise, at minimum run the explorer and reviewer.
+
+## Pre-Claim: Enrichment (Sparse Tasks)
+
+**When:** During the orchestrator's Step 1 enrichment check, BEFORE claiming. Triggered when the task has empty `key_files` OR missing `testing_strategy` OR empty `verification_steps` OR blank `acceptance_criteria`.
+
+**What to do (dual-path, same as the other roles):**
+- **Preferred — `dispatch_agent`:** `dispatch_agent({agent: "stride-task-enricher", prompt: "<sparse task fields>"})` to run the enricher in an isolated subprocess.
+- **Fallback — inline:** if `dispatch_agent` is unavailable, run the `stride-enriching-tasks` skill inline in your main context.
+
+Provide the enricher with:
+- The task's `identifier` (e.g., `W339`)
+- The task's `title`, `type`, and `description` (it must NOT modify these — only read them)
+- Any `priority` or `dependencies` the human specified
+
+Either path returns a single JSON object containing the enriched fields: `key_files`, `patterns_to_follow`, `testing_strategy`, `security_considerations`, `verification_steps`, `pitfalls`, `acceptance_criteria`, `complexity`, `why`, `what`, `where_context`. The enricher does NOT call the Stride API itself.
+
+**After enrichment:**
+1. Submit the returned JSON via `PATCH /api/tasks/:id` to populate the missing fields on the existing task
+2. Re-fetch the task with `GET /api/tasks/:id` to verify all required fields are populated
+3. Proceed to claim the task as normal — the rest of the matrix below applies once it's claimed
+
+**Skip enrichment when:**
+- The task is already well-specified (all four trigger fields populated)
+- The task type is `goal` (decompose first; the resulting child tasks may need enrichment individually)
 
 ## Phase 0: Decomposition (Goals and Large Undecomposed Tasks)
 
@@ -211,7 +244,7 @@ structured = json.loads(m.group(1))  # the parsed schema
   - `acceptance_criteria_checked` ← `len(structured.acceptance_criteria)`
   - `dispatched: true`, `duration_ms: <wall-clock ms>` (as before)
 - Structured fields (copied verbatim from the parsed JSON, but **omit any key the agent did not emit** — do not send empty placeholders):
-  - `status`, `issue_counts`, `issues`, `acceptance_criteria`, `testing_strategy`, `patterns`, `pitfalls`, `schema_version`
+  - `status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, `schema_version`
 
 **Worked example.** Given the reviewer response below (truncated for brevity)…
 
@@ -221,7 +254,7 @@ Approved
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.3",
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
@@ -230,7 +263,12 @@ Approved
     {"criterion": "All task positions recalculate when a card moves columns", "status": "met", "evidence": "lib/kanban/tasks.ex:142-168"},
     {"criterion": "Existing position-stable behavior unchanged", "status": "met", "evidence": "test/kanban/tasks_test.exs:198-240"},
     {"criterion": "PubSub broadcast emitted exactly once per move", "status": "met", "evidence": "lib/kanban/tasks.ex:172"}
-  ]
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "Move + broadcast paths covered by tests."},
+  "patterns": {"status": "passed", "note": "Mirrors the existing reorder pattern."},
+  "pitfalls": {"status": "passed", "note": "None of the 4 listed pitfalls violated."},
+  "security_considerations": {"status": "passed", "note": "Move query scoped to the current user's board; no new input or injection surface."}
 }
 ```
 ````
@@ -244,7 +282,7 @@ Approved
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "issues_found": 0,
   "acceptance_criteria_checked": 3,
-  "schema_version": "1.0",
+  "schema_version": "1.3",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
   "issues": [],
@@ -252,7 +290,12 @@ Approved
     {"criterion": "All task positions recalculate when a card moves columns", "status": "met", "evidence": "lib/kanban/tasks.ex:142-168"},
     {"criterion": "Existing position-stable behavior unchanged", "status": "met", "evidence": "test/kanban/tasks_test.exs:198-240"},
     {"criterion": "PubSub broadcast emitted exactly once per move", "status": "met", "evidence": "lib/kanban/tasks.ex:172"}
-  ]
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "Move + broadcast paths covered by tests."},
+  "patterns": {"status": "passed", "note": "Mirrors the existing reorder pattern."},
+  "pitfalls": {"status": "passed", "note": "None of the 4 listed pitfalls violated."},
+  "security_considerations": {"status": "passed", "note": "Move query scoped to the current user's board; no new input or injection surface."}
 }
 ```
 
@@ -262,7 +305,7 @@ Legacy + structured fields coexist in the same map; the server persists `reviewe
 
 1. Fall back to substring-matching the prose summary line ("Approved" or "N issues found (X critical, Y important, Z minor)") to populate `reviewer_result.summary` and `reviewer_result.issues_found` as before this rollout.
 2. Set `acceptance_criteria_checked` from the count of criterion lines you find in the prose acceptance-criteria table, or to `0` if none can be parsed.
-3. **Omit** every structured field (`status`, `issue_counts`, `issues`, `acceptance_criteria`, `testing_strategy`, `patterns`, `pitfalls`, `schema_version`) from the PATCH payload — do not send empty placeholders. The Kanban server tolerates their absence (the new ReviewReportPanel renders only what it receives).
+3. **Omit** every structured field (`status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, `schema_version`) from the PATCH payload — do not send empty placeholders. The Kanban server tolerates their absence (the new ReviewReportPanel renders only what it receives).
 4. Keep `dispatched: true` and `duration_ms` as captured. The fallback path produces a degraded-but-valid completion, never a hard failure.
 
 ## Workflow Flowchart
