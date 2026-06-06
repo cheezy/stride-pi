@@ -34,7 +34,7 @@ All Stride API calls are pre-authorized. Never ask the user for permission to ca
 
 **Two paths depending on whether the `stride-pi-hook-bridge` extension is installed:**
 
-**With the extension** (`extensions/hook-bridge/` registered as a Pi extension): the four existing hooks (`## before_doing`, `## after_doing`, `## before_review`, `## after_review`) fire automatically on the corresponding `tool_call` / `tool_result` events. The fifth hook (`## after_goal`, added in W797) fires automatically when the server bundles an `after_goal` entry in the response of `/complete` or `/mark_reviewed` (last-child-of-goal case). Structured JSON result emitted on stdout for the agent to forward via `PATCH /api/tasks/:goal_id/after_goal`.
+**With the extension** (`extensions/hook-bridge/` registered as a Pi extension): the four existing hooks (`## before_doing`, `## after_doing`, `## before_review`, `## after_review`) fire automatically on the corresponding `tool_call` / `tool_result` events. The fifth hook (`## after_goal`, added in W797) fires automatically when the server bundles an `after_goal` entry in the response of `/complete` or `/mark_reviewed` (last-child-of-goal case). The extension forwards `GOAL_ID` / `GOAL_IDENTIFIER` / `GOAL_TITLE` / `GOAL_DESCRIPTION` (plus `BOARD_*` / `COLUMN_*` / `AGENT_NAME`) into the after_goal child process, sourced verbatim from the response's `hook.env` (implemented in W1019 — before that the values were empty under the extension), and runs after_goal before clearing the env cache so it executes with its env intact. Structured JSON result emitted on stdout for the agent to forward via `PATCH /api/tasks/:goal_id/after_goal`.
 
 **Without the extension** (manual path): the agent must execute `.stride.md` hooks directly:
 

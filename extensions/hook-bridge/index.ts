@@ -29,7 +29,11 @@ import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-a
 import { parseHookSection } from "./stride-md-parser.js";
 import { detectStrideHook, type StrideHookName } from "./curl-matcher.js";
 import { finalizeAfterDoing, readFinalizerEnv } from "./changed-files.js";
-import { responseHasAfterGoal } from "./after-goal-detector.js";
+import {
+  responseHasAfterGoal,
+  extractGoalEnvFromResult,
+} from "./after-goal-detector.js";
+import { runAfterGoalAndCleanup } from "./after-goal-runner.js";
 
 const HOOK_TIMEOUT_MS = 120_000;
 const KILL_GRACE_MS = 5_000;
@@ -100,40 +104,25 @@ export default function (pi: ExtensionAPI): void {
       reportNonBlockingFailure(ctx, result);
     }
 
-    if (hook === "after_review") {
-      deleteEnvCache(ctx.cwd);
-    }
-
-    // --- After-goal routing (W797 / mirrors stride v1.17.1 W504) ---
-    // When the server bundles an `after_goal` entry in the response of
-    // /complete or /mark_reviewed (last-child-of-goal case), run the local
-    // `## after_goal` section as a blocking hook. Gated on:
-    //   1. Hook name — the post-phase hooks (before_review from /complete,
-    //      after_review from /mark_reviewed); these are the two routes that
-    //      can carry an after_goal entry in the response payload.
-    //   2. Primary success — if the primary hook failed, don't fire.
-    //   3. Response payload — must contain after_goal in its hooks array.
-    // Missing `## after_goal` in .stride.md is a clean no-op (runHook
-    // returns null when the section is absent / commands list is empty).
-    // The structured JSON shape on stdout matches the cross-plugin format
-    // so a Pi agent can forward {exit_code, output, duration_ms} via
-    // PATCH /api/tasks/:goal_id/after_goal.
-    if (
-      (hook === "before_review" || hook === "after_review") &&
-      (!result || result.success) &&
-      responseHasAfterGoal(event.content, event.details)
-    ) {
-      const agResult = await runHook("after_goal", ctx);
-      if (agResult) {
-        process.stdout.write(formatHookResultJson(agResult) + "\n");
-      }
-    }
+    // Run `## after_goal` (when the server bundled one) and then clean up
+    // the env cache. Ordering matters: cleanup must follow after_goal so
+    // the hook runs with its env intact on the mark_reviewed route. The
+    // forwarded goalEnv carries the GOAL_* / BOARD_* / COLUMN_* /
+    // AGENT_NAME values the server supplied verbatim in `hook.env`.
+    await runAfterGoalAndCleanup(hook, !result || result.success, event.content, event.details, {
+      hasAfterGoal: responseHasAfterGoal,
+      extractGoalEnv: extractGoalEnvFromResult,
+      runAfterGoal: (goalEnv) => runHook("after_goal", ctx, goalEnv),
+      emitResult: (agResult) => process.stdout.write(formatHookResultJson(agResult) + "\n"),
+      deleteEnvCache: () => deleteEnvCache(ctx.cwd),
+    });
   });
 }
 
 async function runHook(
   hook: StrideHookName,
   ctx: ExtensionContext,
+  extraEnv?: Record<string, string>,
 ): Promise<HookResult | null> {
   const stridePath = path.join(ctx.cwd, ".stride.md");
   if (!fs.existsSync(stridePath)) return null;
@@ -148,7 +137,7 @@ async function runHook(
   const commands = parseHookSection(content, hook);
   if (commands.length === 0) return null;
 
-  const env = buildHookEnv(ctx.cwd, hook);
+  const env = buildHookEnv(ctx.cwd, hook, extraEnv);
   return runHookCommands(hook, commands, ctx.cwd, env, ctx.signal);
 }
 
@@ -281,11 +270,16 @@ function runOneCommand(
   });
 }
 
-function buildHookEnv(cwd: string, hook: StrideHookName): NodeJS.ProcessEnv {
+function buildHookEnv(
+  cwd: string,
+  hook: StrideHookName,
+  extraEnv?: Record<string, string>,
+): NodeJS.ProcessEnv {
   const cached = loadEnvCache(cwd);
   return {
     ...process.env,
     ...cached,
+    ...(extraEnv ?? {}),
     HOOK_NAME: hook,
   };
 }
