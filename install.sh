@@ -15,19 +15,26 @@ set -euo pipefail
 REPO="https://github.com/cheezy/stride-pi.git"
 GLOBAL_DIR="$HOME/.pi/agent"
 MODE="global"
-INSTALL_EXTENSION="false"
+# Extensions (hook-bridge + subagent-dispatch) ship BY DEFAULT so lifecycle
+# hooks auto-fire out of the box, mirroring the zero-config wiring of the
+# Claude Code plugin. Use --no-extensions (alias --skills-only) to opt out.
+INSTALL_EXTENSION="true"
 
 for arg in "$@"; do
   case "$arg" in
     --project) MODE="project" ;;
-    --with-extension) INSTALL_EXTENSION="true" ;;
+    --no-extensions|--skills-only) INSTALL_EXTENSION="false" ;;
+    --with-extension) INSTALL_EXTENSION="true" ;;  # back-compat no-op; extensions are now the default
     --help|-h)
-      echo "Usage: install.sh [--project] [--with-extension]"
+      echo "Usage: install.sh [--project] [--no-extensions]"
       echo ""
-      echo "  (default)          Install globally to ~/.pi/agent/ (available in all projects)"
+      echo "  (default)          Install globally to ~/.pi/agent/ (available in all projects),"
+      echo "                     including the hook-bridge + subagent-dispatch extensions so"
+      echo "                     lifecycle hooks auto-fire and dispatch_agent is available."
       echo "  --project          Install to .pi/ in the current directory"
-      echo "  --with-extension   Also install the subagent-dispatch TypeScript extension"
-      echo "                     (recommended for isolation + parallelism — see README)"
+      echo "  --no-extensions    Skills only — skip the TypeScript extensions (alias: --skills-only)."
+      echo "                     Hooks then run via the manual fallback documented in the skills."
+      echo "  --with-extension   Deprecated: extensions now install by default (accepted as a no-op)"
       exit 0
       ;;
   esac
@@ -109,9 +116,13 @@ echo "  1. Create .stride_auth.md with your API credentials (see README)"
 echo "  2. Create .stride.md with your hook commands"
 echo "  3. Add .stride_auth.md to .gitignore"
 echo "  4. Invoke the stride-workflow skill to begin the task lifecycle"
-if [ "$INSTALL_EXTENSION" != "true" ]; then
+if [ "$INSTALL_EXTENSION" = "true" ]; then
   echo ""
-  echo "Optional: Install the subagent-dispatch extension for isolation + parallelism:"
-  echo "  curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | bash -s -- --with-extension"
-  echo "  (adds the dispatch_agent tool; see README for details)"
+  echo "The hook-bridge extension is installed, so your .stride.md lifecycle hooks"
+  echo "fire automatically (no extra step). subagent-dispatch adds the dispatch_agent tool."
+else
+  echo ""
+  echo "Installed skills only (--no-extensions). Lifecycle hooks will NOT auto-fire —"
+  echo "run them via the manual fallback documented in the skills, or re-install without"
+  echo "--no-extensions to add the hook-bridge + subagent-dispatch extensions."
 fi

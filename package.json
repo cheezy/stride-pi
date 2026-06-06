@@ -14,8 +14,7 @@
     "extensions": [
       "./extensions/subagent-dispatch",
       "./extensions/hook-bridge"
-    ],
-    "prompts": ["./prompts"]
+    ]
   },
   "scripts": {
     "test": "node --test extensions/hook-bridge/*.test.ts"

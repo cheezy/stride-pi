@@ -164,11 +164,13 @@ Pi does not ship with native subagent dispatch. stride-pi provides two paths; bo
 
 ### Preferred: the `subagent-dispatch` extension (Phase 2b)
 
-Install with the `--with-extension` flag:
+**Installed by default** — the default `install.sh` ships both the `hook-bridge` and `subagent-dispatch` extensions, so no extra flag is needed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | bash -s -- --with-extension
+curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | bash
 ```
+
+(`--with-extension` is still accepted as a deprecated no-op. Pass `--no-extensions` to install skills only.)
 
 This installs a TypeScript Pi extension that registers a `dispatch_agent(agent, prompt)` tool. When you invoke it, the tool spawns an isolated `pi -p` subprocess with `PI_CODING_AGENT_DIR` pointed at an ephemeral config directory and `--append-system-prompt` pointed at the per-agent SYSTEM.md. The subagent runs in its own context window, returns structured output, and exits — your main agent's context stays clean.
 
@@ -176,11 +178,11 @@ Four agents are registered: `stride-task-explorer`, `stride-task-reviewer`, `str
 
 ### Fallback: inline skills (Phase 2a)
 
-If the extension isn't installed (default `install.sh` without `--with-extension`, or an older Pi version that can't load the extension), four inline skills provide the same functionality without the isolation: `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
+If the extensions aren't installed (you passed `--no-extensions`, or an older Pi version that can't load the extension), four inline skills provide the same functionality without the isolation: `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
 
 ### Which should you use?
 
-Install with `--with-extension` unless you have a specific reason not to. The extension gives you:
+Extensions install by default — keep them (don't pass `--no-extensions`) unless you have a specific reason not to. The extension gives you:
 - **Isolation** — exploration of large `key_files` doesn't consume your main agent's context budget
 - **Parallelism** — multiple key_files can be explored concurrently (future enhancement; one-at-a-time today)
 - **Compatibility** — matches the subagent model on Claude Code, Codex CLI, and Gemini CLI sibling plugins

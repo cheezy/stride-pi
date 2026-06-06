@@ -14,7 +14,8 @@ Per the Pi README (https://github.com/badlogic/pi-mono/tree/main/packages/coding
 |---|---|---|
 | `skills` | `./skills` | 7 subdirectories, each with `SKILL.md` ✓ |
 | `extensions` | `./extensions` | Empty placeholder (`.gitkeep`) — populated in Phases 2–3 ✓ |
-| `prompts` | `./prompts` | Empty placeholder (`.gitkeep`) — optional ✓ |
+
+(The originally-declared empty `prompts` → `./prompts` placeholder was removed in W1021 along with the unused top-level `agents/` placeholder; `package.json` no longer declares `prompts`.)
 
 Additional expected auto-loaded file: `AGENTS.md` at repo root — present, 60 lines ✓
 
