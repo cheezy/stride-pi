@@ -1,9 +1,16 @@
 ---
 name: stride-enriching-tasks
-description: MANDATORY when a task has empty key_files, missing testing_strategy, or no verification_steps. Transforms minimal human-provided task specs into complete implementation-ready specifications through automated codebase exploration. Without enrichment, implementing agents waste 3+ hours on unfocused exploration that this skill does in 5 minutes.
+description: INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt. Contains the task enrichment procedure (codebase exploration to populate key_files, testing_strategy, verification_steps for sparse tasks), used during the orchestrator's enrichment phase before claiming.
+skills_version: 1.0
 ---
 
 # Stride: Enriching Tasks
+
+## STOP — orchestrator check
+
+If you arrived here directly from a user prompt, you are in the wrong skill.
+Invoke `stride:stride-workflow` instead. Do not read further.
+Sub-skills are dispatched by the orchestrator only.
 
 ## THIS SKILL IS MANDATORY FOR SPARSE TASKS — NOT OPTIONAL
 
@@ -12,6 +19,7 @@ description: MANDATORY when a task has empty key_files, missing testing_strategy
 This skill transforms minimal specifications into complete ones by:
 - Exploring the codebase to discover `key_files` (5-10 minutes)
 - Reading existing tests to build `testing_strategy`
+- Analyzing the touched code for security implications to build `security_considerations`
 - Generating `verification_steps` from discovered patterns
 - Identifying `pitfalls` from code analysis
 - Writing `acceptance_criteria` from intent analysis
@@ -20,16 +28,17 @@ This skill transforms minimal specifications into complete ones by:
 
 ## ⚠️ REVIEW QUEUE SCORING — ENRICHMENT IS THE LAST CHANCE ⚠️
 
-The **review_queue dashboard** scores every completed task on these four fields:
+The **review_queue dashboard** scores every completed task on these five fields:
 
 - `acceptance_criteria`
 - `testing_strategy`
+- `security_considerations`
 - `pitfalls`
 - `patterns_to_follow`
 
 Enrichment runs **before the claim** — it is the final point at which these can be populated before the task hits Doing. **Whatever you leave empty here will render as an empty pill on the review_queue dashboard at completion**, visible to every reviewer, and the implementing agent will not back-fill them mid-flight.
 
-Treat each of the four as a **mandatory-for-review** output of enrichment, not optional polish. If a field is genuinely not applicable (e.g. doc-only task has no `testing_strategy.unit_tests`), populate it with the specific reason — never leave it null and never bundle the four under a single checklist item.
+Treat each of the five as a **mandatory-for-review** output of enrichment, not optional polish. If a field is genuinely not applicable (e.g. doc-only task has no `testing_strategy.unit_tests`, or a pure-styling task has no `security_considerations`), populate it with the specific reason — never leave it null and never bundle the five under a single checklist item.
 
 ## Overview
 
@@ -280,9 +289,9 @@ No similar feature exists?
 ]
 ```
 
-#### Step 5: Identify Risks -> `pitfalls`
+#### Step 5: Identify Risks and Security -> `pitfalls`, `security_considerations`
 
-**Strategy:** Analyze the code area for common traps.
+**Strategy:** Analyze the code area for common traps, then — in the same pass — for security implications.
 
 1. **Check for shared state** — does the file use PubSub, assigns, or global state that could cause side effects?
 2. **Check for N+1 queries** — does the code area have Ecto preloads or joins that need attention?
@@ -295,6 +304,16 @@ No similar feature exists?
 - "Don't add Ecto queries directly in LiveViews — use context modules"
 - "Don't forget translations for user-visible text"
 - "Don't break existing tests in [related test file]"
+
+**Security analysis -> `security_considerations` (array of strings):** in the same pass over the code area, identify the security implications the implementing agent must address. Emit one concrete statement per implication across these categories:
+
+1. **Input validation/sanitization** — is user-supplied data validated before use?
+2. **Authorization boundaries** — does the requesting user own the resource being read or mutated?
+3. **Secret/credential handling** — are tokens, keys, or credentials kept out of logs and responses?
+4. **Injection surfaces** — SQL, command, or XSS vectors (parameterize queries; escape rendered values).
+5. **Data exposure** — does the change leak data the user is not authorized to see?
+
+Example: `["Authorize the requesting user owns the board before mutating", "Parameterize the search term — never interpolate it into raw SQL"]`. If the change genuinely has no security surface, say so explicitly (`["None — pure CSS/styling change, no input or authz touched"]`) rather than leaving it empty. The `Security-sensitive code? -> At least "medium"` complexity signal (Phase 3) and a non-trivial `security_considerations` go hand in hand.
 
 #### Step 6: Define Done -> `acceptance_criteria`
 
@@ -349,9 +368,12 @@ Combine all discovered fields into the final task specification.
 - [ ] `verification_steps` is an array of objects with `step_type`, `step_text`, `position`
 - [ ] **`acceptance_criteria` is populated** — review_queue-scored; newline-separated string (NOT an array); blank or vague entries score as an empty pill
 - [ ] **`testing_strategy` is populated** — review_queue-scored; object with `unit_tests`, `integration_tests`, `manual_tests` as arrays of strings; empty arrays score as an empty pill
+- [ ] **`security_considerations` is populated** — review_queue-scored; array of strings naming the security implications to address (or an explicit "None — …" reason); an empty array scores as an empty pill
 - [ ] **`pitfalls` is populated** — review_queue-scored; array of strings; an empty array scores as an empty pill
 - [ ] **`patterns_to_follow` is populated** — review_queue-scored; newline-separated string with file references (NOT an array); blank scores as an empty pill
 - [ ] `needs_review` is set to `false`
+- [ ] No invented file paths — every entry is a path located via Grep, Glob, or Read
+- [ ] All 17 fields above were considered for this task (none silently skipped)
 
 ## Enrichment Workflow Flowchart
 
@@ -374,8 +396,9 @@ Phase 2: Explore Codebase
 |   |- Read existing test patterns
 |   |- Generate unit/integration/manual/edge test cases
 |- Step 4: Generate verification_steps from test files + credo
-|- Step 5: Analyze code area for pitfalls
+|- Step 5: Analyze code area for pitfalls and security_considerations
 |   |- Check shared state, N+1, auth, existing tests
+|   |- Check input validation, authz, secrets, injection, data exposure
 |- Step 6: Convert intent to acceptance_criteria
     |
 Phase 3: Estimate Complexity
@@ -413,6 +436,7 @@ curl -s -X PATCH \
   -d '{
     "key_files": [...],
     "testing_strategy": {...},
+    "security_considerations": [...],
     "patterns_to_follow": "...",
     "verification_steps": [...],
     "pitfalls": [...],
@@ -429,6 +453,7 @@ curl -s -X PATCH \
 - `key_files`: Array of objects `[{"file_path": "...", "note": "...", "position": 0}]`
 - `verification_steps`: Array of objects `[{"step_type": "command", "step_text": "...", "position": 0}]`
 - `testing_strategy`: Object with array values `{"unit_tests": ["..."], "integration_tests": ["..."]}`
+- `security_considerations`: Array of strings `["Authorize the user owns the resource", "Sanitize the filename to prevent path traversal"]`
 - `acceptance_criteria`: Newline-separated string (NOT an array)
 - `patterns_to_follow`: Newline-separated string (NOT an array)
 - `pitfalls`: Array of strings `["Don't...", "Avoid..."]`
@@ -607,6 +632,10 @@ The enriched task MUST match the Stride API task schema exactly:
     ],
     "coverage_target": "100% for pagination query and LiveView handlers"
   },
+  "security_considerations": [
+    "Scope the paginated query to the requesting user's authorized boards — never return tasks the user cannot see",
+    "Validate and bound the page parameter (reject negative, non-integer, or oversized values) before using it in the query"
+  ],
   "acceptance_criteria": "Pagination controls visible below task list\nPage size defaults to 25 tasks\nNext/Previous navigation works correctly\nURL updates with page parameter\nPerformance improved for 100+ tasks\nAll existing tests still pass",
   "patterns_to_follow": "See lib/kanban_web/live/board_live/index.ex for LiveView event handling pattern\nFollow existing query pattern in lib/kanban/tasks.ex for Ecto pagination\nSee test/kanban_web/live/board_live/index_test.exs for LiveView test structure",
   "pitfalls": [
@@ -627,10 +656,11 @@ The enriched task MUST match the Stride API task schema exactly:
 - "This is a simple task, it doesn't need all 15 fields"
 - "I'll leave `acceptance_criteria` blank — the implementing agent will figure out 'done'"
 - "`testing_strategy` doesn't apply to this enrichment — empty object is fine"
+- "`security_considerations` is the reviewer's job — I'll ship an empty array"
 - "`pitfalls` is hard to predict — I'll ship an empty array"
 - "`patterns_to_follow` is optional polish — skip it"
 
-**All of these mean: Run the full enrichment process. Every field saves 15-30 minutes for the implementing agent.** The last four also mean: **an empty pill on the review_queue dashboard at completion** — and enrichment is the last chance to prevent it.
+**All of these mean: Run the full enrichment process. Every field saves 15-30 minutes for the implementing agent.** The last five also mean: **an empty pill on the review_queue dashboard at completion** — and enrichment is the last chance to prevent it.
 
 ## Rationalization Table
 
@@ -748,7 +778,7 @@ ENRICHMENT PHASES:
 |   |- Step 2: Read siblings -> patterns_to_follow
 |   |- Step 3: Map to tests -> testing_strategy
 |   |- Step 4: Build commands -> verification_steps
-|   |- Step 5: Analyze risks -> pitfalls
+|   |- Step 5: Analyze risks and security -> pitfalls, security_considerations
 |   |- Step 6: Define outcomes -> acceptance_criteria
 |
 |- Phase 3: Estimate Complexity
@@ -756,7 +786,7 @@ ENRICHMENT PHASES:
 |
 |- Phase 4: Assemble and Validate
     |- Combine all fields into API JSON
-    |- Run 16-item checklist
+    |- Run 17-item checklist
     |- Submit via POST /api/tasks
 
 PRESERVED FROM HUMAN INPUT (never modified by enrichment):
@@ -769,12 +799,13 @@ FIELD DISCOVERY ORDER (optimized for dependency):
   4. testing_strategy        — from key_files test mapping
   5. verification_steps      — from testing_strategy
   6. pitfalls                — from key_files analysis
-  7. acceptance_criteria     — from task intent + code context
-  8. why (articulate)        — from input + context
-  9. what (specify)          — from key_files + patterns
- 10. complexity (estimate)   — from all signals
- 11. priority               — from input or default
- 12. dependencies           — from input only
+  7. security_considerations — from key_files security analysis
+  8. acceptance_criteria     — from task intent + code context
+  9. why (articulate)        — from input + context
+ 10. what (specify)          — from key_files + patterns
+ 11. complexity (estimate)   — from all signals
+ 12. priority               — from input or default
+ 13. dependencies           — from input only
 
 DECISION RULE:
   Can determine from codebase? -> Explore and decide
