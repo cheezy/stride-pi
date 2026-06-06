@@ -1,9 +1,16 @@
 ---
 name: stride-completing-tasks
-description: MANDATORY before calling /api/tasks/:id/complete. Contains ALL required fields and hook formats. Skipping this skill causes 3+ API rejections. Activate when you've finished work on a Stride task.
+description: INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt. Contains the completion API contract (PATCH /api/tasks/:id/complete required fields including completion_summary, actual_complexity, after_doing_result, before_review_result, explorer_result, reviewer_result), used during the orchestrator's completion phase.
+skills_version: 1.0
 ---
 
 # Stride: Completing Tasks
+
+## STOP — orchestrator check
+
+If you arrived here directly from a user prompt, you are in the wrong skill.
+Invoke `stride:stride-workflow` instead. Do not read further.
+Sub-skills are dispatched by the orchestrator only.
 
 ## THIS SKILL IS MANDATORY — NOT OPTIONAL
 
@@ -219,6 +226,10 @@ PATCH /api/tasks/:id/complete
   "agent_name": "Pi",
   "time_spent_minutes": 45,
   "completion_notes": "All tests passing. PR #123 created.",
+  "completion_summary": "Brief one-line summary for tracking.",
+  "actual_complexity": "medium",
+  "actual_files_changed": "lib/foo.ex, lib/bar.ex, test/foo_test.exs",
+  "skills_version": "1.0",
   "review_report": "## Review Summary\n\nApproved — 0 issues found.\n\n### Acceptance Criteria\n| # | Criterion | Status |\n|---|-----------|--------|\n| 1 | Feature works | Met |",
   "after_doing_result": {
     "exit_code": 0,
@@ -292,14 +303,28 @@ Free-form reasons are rejected — the enum is the contract.
 
 "reviewer_result": {
   "dispatched": true,
-  "summary": "<40+ non-whitespace characters describing what was reviewed>",
   "duration_ms": 8000,
+  "summary": "<40+ non-whitespace characters describing what was reviewed>",
+  "issues_found": 0,
   "acceptance_criteria_checked": 5,
-  "issues_found": 0
+  "schema_version": "1.3",
+  "status": "approved",
+  "issue_counts": {"critical": 0, "important": 0, "minor": 0},
+  "issues": [],
+  "acceptance_criteria": [
+    {"criterion": "<verbatim criterion>", "status": "met", "evidence": "<file:line>"}
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "<rationale>"},
+  "patterns": {"status": "passed", "note": "<rationale>"},
+  "pitfalls": {"status": "passed", "note": "<rationale>"},
+  "security_considerations": {"status": "passed", "note": "<rationale>"}
 }
 ```
 
 `reviewer_result` additionally requires `acceptance_criteria_checked` and `issues_found` as non-negative integers when `dispatched` is `true`.
+
+When `stride-task-reviewer` was dispatched (or run inline on Pi), `reviewer_result` is the reviewer's emitted **structured JSON block** (`schema_version`, `status`, `issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]`, and the per-section `testing_strategy`/`patterns`/`pitfalls`/`security_considerations` verdicts) copied verbatim and **merged** with the dispatch telemetry plus the derived legacy summary fields. The structured fields are what the Kanban review queue renders (issue list, acceptance verdicts, code-review checks, security verdict). **Do NOT send only the thin legacy envelope** (`dispatched`/`duration_ms`/`summary`/`issues_found`/`acceptance_criteria_checked`) — it strips the issues, acceptance verdicts, project checks, and section verdicts the review queue needs. Extract the fenced ` ```json ` block per the `stride-subagent-workflow` skill's "Extracting the structured review block" — that section owns the legacy↔structured mapping (`issues_found = sum(issue_counts)`, `acceptance_criteria_checked = len(acceptance_criteria)`). The structured block's schema is owned by `stride/agents/task-reviewer.md`; do not redefine it here. The legacy `acceptance_criteria_checked` and `issues_found` integers remain required (for back-compat) when `dispatched` is `true`. If the reviewer emitted no parseable ` ```json ` fence, fall back to the legacy-only envelope and omit the structured keys — never invent them. Copy exactly the keys the reviewer produced: an approved review still emits `issues: []` and `project_checks: []` (the reviewer emits those arrays unconditionally), so the empty arrays above are real, not placeholders.
 
 ### Minimum summary length
 
@@ -461,6 +486,10 @@ REQUIRED BODY: {
   "agent_name": "Pi",
   "time_spent_minutes": 45,
   "completion_notes": "...",
+  "completion_summary": "Brief one-line summary for tracking.",
+  "actual_complexity": "medium",
+  "actual_files_changed": "lib/foo.ex, lib/bar.ex, test/foo_test.exs",
+  "skills_version": "1.0",
   "review_report": "..." (optional — include when task-reviewer ran),
   "after_doing_result": {
     "exit_code": 0,
@@ -530,6 +559,7 @@ Reason enum: no_subagent_support, small_task_0_1_key_files, trivial_change_docs_
 | `explorer_result` | object | Yes | `task-explorer` custom agent dispatch result OR self-reported skip. See Explorer/Reviewer Result Schema section. |
 | `reviewer_result` | object | Yes | `task-reviewer` custom agent dispatch result OR self-reported skip. See Explorer/Reviewer Result Schema section. |
 | `review_report` | string | No | Structured review report from task-reviewer custom agent. Include when a review was performed; omit when no review was done. |
+| `skills_version` | string | No | Your skills version from SKILL.md frontmatter |
 
 **WRONG — actual_files_changed as array:**
 ```json
