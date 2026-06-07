@@ -90,3 +90,22 @@ For end-to-end sign-off, do the following in an interactive Pi session:
 5. Capture a screenshot or log excerpt and append it to this document under a `## Manual session log` heading.
 
 Until that section is populated, treat W256 as "validated programmatically; manual end-to-end pending".
+
+## dispatch_agent event-contract verification (W1022)
+
+**Date:** 2026-06-06 · **Pi version:** `@mariozechner/pi-coding-agent@0.67.68`
+
+Separate from the W256 hook-blocking validation above, W1022 verified the `subagent-dispatch` extension's event contract against a live `pi -p` subprocess — the piece W277's reviewer flagged as inferred-but-never-run (see `docs/smoke-test-w277-dispatch-agent.md`).
+
+**Method:** ran `pi --mode json -p --no-session "<trivial prompt>"` directly (throwaway temp dir, no Stride token in the prompt) and captured the raw streamed JSON.
+
+**Verified (live):**
+- Pi `--mode json -p` emits newline-delimited JSON in the sequence `session → agent_start → turn_start → message_start → message_end → turn_end → agent_end`.
+- The final assistant turn is a **`message_end`** event with `message = { role: "assistant", content: [ { type: "text", text }, ... ] }`.
+- This **confirms** `extractMessageText`'s `message_end` filter and `message.content[].text` extraction (gated on `role === "assistant"`) — so a successful dispatch captures the agent's text and does NOT silently return `isError: true` "no messages". The W277 inference was correct; no event-filter code change was required (only the doc comment was updated to record the verified contract).
+
+**Not verified (requires a Pi with a working LLM provider):**
+- A content-bearing happy-path dispatch and the `isError`-unset return. The test box's Pi has no usable model — the default Bedrock `anthropic.claude-opus-4-7` returns `AccessDeniedException`, and `--provider google` errors — so the assistant `message_end` came back empty with `stopReason: "error"`.
+- The `tool_result_end` event name (no tool call occurred). It is retained in `extractMessageText` as an inert, documented defensive fallback.
+
+See `docs/smoke-test-w277-dispatch-agent.md` → **Status** for the full record and the remaining happy-path sign-off step.

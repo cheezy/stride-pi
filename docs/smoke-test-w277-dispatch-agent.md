@@ -91,3 +91,36 @@ And optionally update `docs/ADR-001-subagent-model.md`'s Status line from "Shipp
 ## If a fix is needed
 
 Open a new Stride defect referencing this smoke test as the discovery context. Link the defect here and in the ADR. Apply the fix to `index.ts`, reinstall with `--with-extension`, and re-run the smoke test until the happy path above succeeds.
+
+## Status
+
+**Partially verified 2026-06-06 against `@mariozechner/pi-coding-agent@0.67.68` (W1022).**
+
+### What was live-verified (Fix A — event-type names: CONFIRMED)
+
+Ran `pi --mode json -p --no-session "<trivial prompt>"` directly in a shell (in a throwaway temp dir, no Stride token in the prompt) and captured the raw streamed JSON. Pi emits one JSON object per line in this sequence:
+
+```
+session → agent_start → turn_start → message_start → message_end → turn_end → agent_end
+```
+
+The assistant's final turn arrives as a **`message_end`** event whose `message` is `{ role: "assistant", content: [ { type: "text", text: "..." }, ... ] }`.
+
+This **confirms** the contract that `extractMessageText` filters on:
+- The event name `message_end` is correct (the inference was right).
+- The content path `message.content[].text` (gated on `role === "assistant"`) is correct.
+- Events are newline-delimited JSON, matching the line-buffered parser in `runSubprocess`.
+
+So the bug this smoke test was guarding against — a structurally-fine subprocess silently returning `isError: true` "subprocess produced no messages" because the event names were wrong — **does not occur**: on a successful run, the final assistant text is captured via `message_end`. No code fix to the event filter was required; only the `extractMessageText` doc comment was updated to record the verified contract.
+
+### What could NOT be exercised here (and why)
+
+The test box's Pi has **no working LLM provider**: the configured default (AWS Bedrock `anthropic.claude-opus-4-7`) returns `AccessDeniedException` (the IAM user lacks `bedrock:InvokeModelWithResponseStream`), and `--provider google` also returns a provider error. The trivial run therefore produced an assistant `message_end` with **empty** content and `stopReason: "error"`, never a content-bearing answer or a tool call.
+
+Consequently, the following remain **unverified by a live LLM run** and need a Pi configured with a working model:
+- A full happy-path `dispatch_agent({agent: "stride-task-explorer", ...})` returning a multi-paragraph answer with `isError` unset.
+- The `tool_result_end` event name (no tool calls occurred). It is retained in `extractMessageText` as a documented, inert defensive fallback (see the comment there) — tool-result events are not `role: "assistant"`, and the run loop returns only the final assistant message, so it cannot change behavior today.
+
+### To finish the happy-path sign-off
+
+On a Pi install with a working provider/model, run the dispatch in the "Run the smoke test" section above. If it returns the agent's description text (and `isError` is unset), flip this status to "Verified" and, if a `tool_result_end` event is observed, confirm or correct that name in `extractMessageText`.

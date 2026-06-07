@@ -258,11 +258,28 @@ async function runSubprocess(
 /**
  * Pull text content out of a pi `--mode json` event.
  *
- * The event shape from Pi looks like:
- *   { type: "message_end", message: { role: "assistant", content: [...] } }
+ * LIVE-VERIFIED against `pi --mode json -p --no-session` on
+ * @mariozechner/pi-coding-agent@0.67.68 (W1022, see
+ * docs/smoke-test-w277-dispatch-agent.md). A `-p` run streams one JSON object
+ * per line in this sequence:
  *
- * where `content` is an array of blocks. We concatenate all text blocks.
- * Unknown event types are ignored.
+ *   session → agent_start → turn_start → message_start → message_end
+ *           → turn_end → agent_end
+ *
+ * The subagent's final answer arrives as a `message_end` event whose `message`
+ * is `{ role: "assistant", content: [ { type: "text", text: "..." }, ... ] }`.
+ * The inferred `message_end` name and content shape are therefore CONFIRMED, so
+ * a successful dispatch captures the assistant text rather than silently
+ * returning "no messages". We concatenate all text blocks; the run loop keeps
+ * only the last captured message (the final assistant turn). Unknown event
+ * types are ignored.
+ *
+ * `tool_result_end` is retained as a DEFENSIVE fallback only — it was not
+ * observed in the W1022 verification (the trivial run made no tool calls, and
+ * the live LLM provider was unavailable for a tool-using run). It is inert in
+ * practice: tool-result events are not `role: "assistant"`, so the guard below
+ * rejects them, and the run loop returns only the final assistant message
+ * regardless. Left in place pending a tool-using live run on a configured Pi.
  */
 function extractMessageText(event: unknown): string | null {
   if (!event || typeof event !== "object") return null;
