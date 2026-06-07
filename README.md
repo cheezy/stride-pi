@@ -174,11 +174,11 @@ curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | 
 
 This installs a TypeScript Pi extension that registers a `dispatch_agent(agent, prompt)` tool. When you invoke it, the tool spawns an isolated `pi -p` subprocess with `PI_CODING_AGENT_DIR` pointed at an ephemeral config directory and `--append-system-prompt` pointed at the per-agent SYSTEM.md. The subagent runs in its own context window, returns structured output, and exits — your main agent's context stays clean.
 
-Four agents are registered: `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The `stride-subagent-workflow` skill documents when to use each.
+Five agents are registered: `stride-task-enricher`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The `stride-subagent-workflow` skill documents when to use each (`task-enricher` runs **before claiming** a sparse task; the rest run after claim). The `stride-task-reviewer` agent emits a `schema_version` 1.3 structured review block (`status`, `issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]`, and per-section `testing_strategy`/`patterns`/`pitfalls`/`security_considerations` verdicts).
 
 ### Fallback: inline skills (Phase 2a)
 
-If the extensions aren't installed (you passed `--no-extensions`, or an older Pi version that can't load the extension), four inline skills provide the same functionality without the isolation: `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
+If the extensions aren't installed (you passed `--no-extensions`, or an older Pi version that can't load the extension), five inline skills provide the same functionality without the isolation: `stride-enriching-tasks` (pre-claim enrichment), `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
 
 ### Which should you use?
 

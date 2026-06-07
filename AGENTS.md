@@ -15,7 +15,12 @@ Before ANY Stride API call, activate the corresponding skill. These skills conta
 
 ## Subagent Support
 
-Pi (https://github.com/badlogic/pi-mono) does not ship with native subagent dispatch. Until Phase 2 of this plugin decides between inline skills and a TypeScript extension (tracked as G69 in Stride), the `task-explorer`, `task-reviewer`, `task-decomposer`, and `hook-diagnostician` named in `stride-subagent-workflow` are **not available**. Perform exploration and review inline using the task's `key_files`, `patterns_to_follow`, and `acceptance_criteria` — then submit a self-reported skip in the `explorer_result` and `reviewer_result` fields on `/complete`.
+Pi (https://github.com/badlogic/pi-mono) does not ship with native subagent dispatch, so stride-pi provides **both** paths (dual-path), and `install.sh` ships the `subagent-dispatch` extension **by default**:
+
+- **Preferred — `dispatch_agent` extension:** when the `subagent-dispatch` extension is loaded, a `dispatch_agent(agent, prompt)` tool runs any of the **5** agents (`stride-task-enricher`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`) in an isolated `pi -p` subprocess. Record the result in `explorer_result` / `reviewer_result` with the **dispatched** shape.
+- **Fallback — inline skills:** if you installed with `--no-extensions` (or on a Pi that can't load extensions), run the matching inline skills (`stride-enriching-tasks`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`) in your main context. Because you genuinely performed the work, still use the **dispatched** result shape — the self-reported skip form is only for steps the decision matrix told you to skip.
+
+`task-enricher` runs **before claiming** a sparse task (enrich → PATCH → re-fetch → claim); the others run after claim per the `stride-subagent-workflow` decision matrix. The `task-reviewer` emits a `schema_version` 1.3 structured review block (with `security_considerations` and `project_checks`).
 
 ## Workflow Sequence
 
