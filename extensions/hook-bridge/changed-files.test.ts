@@ -339,11 +339,10 @@ describe("putChangedFiles (fetch mocked)", () => {
     }
   });
 
-  it("PUTs to /api/tasks/:id/changed_files with the wrapped body shape", async () => {
+  it("PUTs the base64-encoded changed_files envelope (D61)", async () => {
     stub = stubFetch(() => new Response("{}", { status: 200 }));
-    await putChangedFiles("https://api.example.com", "tok-abc", "W741", [
-      { path: "lib/foo.ex", diff: "@@ -1 +1 @@\n-a\n+b\n" },
-    ]);
+    const files = [{ path: "lib/foo.ex", diff: "@@ -1 +1 @@\n-a\n+b\n" }];
+    await putChangedFiles("https://api.example.com", "tok-abc", "W741", files);
     assert.equal(stub.calls.length, 1);
     const call = stub.calls[0];
     assert.equal(call.url, "https://api.example.com/api/tasks/W741/changed_files");
@@ -351,8 +350,19 @@ describe("putChangedFiles (fetch mocked)", () => {
     const headers = call.init?.headers as Record<string, string>;
     assert.equal(headers["Authorization"], "Bearer tok-abc");
     assert.equal(headers["Content-Type"], "application/json");
-    const body = JSON.parse(call.init?.body as string);
-    assert.deepEqual(body, { changed_files: [{ path: "lib/foo.ex", diff: "@@ -1 +1 @@\n-a\n+b\n" }] });
+    const rawBody = call.init?.body as string;
+    const body = JSON.parse(rawBody);
+    // D61: transport-encoded envelope, NOT a bare array and NOT raw diff text.
+    assert.equal(body.changed_files.encoding, "base64");
+    assert.equal(typeof body.changed_files.data, "string");
+    assert.ok(!rawBody.includes("lib/foo.ex"), "raw path must be absent from the wire body");
+    // Round-trip: data is base64 of the snapshot array JSON and decodes back.
+    const expectedData = Buffer.from(JSON.stringify(files), "utf8").toString("base64");
+    assert.equal(body.changed_files.data, expectedData);
+    assert.deepEqual(
+      JSON.parse(Buffer.from(body.changed_files.data, "base64").toString("utf8")),
+      files,
+    );
   });
 
   it("trims a trailing slash from the API base before composing the URL", async () => {
@@ -367,10 +377,24 @@ describe("putChangedFiles (fetch mocked)", () => {
     assert.equal(stub.calls.length, 1);
   });
 
-  it("resolves silently when the server returns 500", async () => {
+  it("warns to stderr on a non-2xx response without throwing (D61)", async () => {
     stub = stubFetch(() => new Response("server error", { status: 500 }));
-    await putChangedFiles("https://api.example.com", "tok", "W741", []);
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      await putChangedFiles("https://api.example.com", "tok", "W741", []);
+    } finally {
+      console.error = originalError;
+    }
     assert.equal(stub.calls.length, 1);
+    assert.ok(
+      errors.some((e) => e.includes("changed_files upload failed (HTTP 500) for task W741")),
+      "expected a non-2xx stderr warning",
+    );
+    assert.ok(!errors.join(" ").includes("tok"), "token must not appear in the warning");
   });
 
   it("resolves silently when fetch itself rejects (network failure)", async () => {
@@ -436,7 +460,13 @@ describe("finalizeAfterDoing (fetch mocked)", () => {
       assert.equal(stub.calls.length, 1);
       assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/W999/changed_files");
       const body = JSON.parse(stub.calls[0].init?.body as string);
-      assert.equal(body.changed_files.length, 1);
+      // D61: the wire body is the base64 envelope; decode it to verify the list.
+      assert.equal(body.changed_files.encoding, "base64");
+      const decoded = JSON.parse(
+        Buffer.from(body.changed_files.data, "base64").toString("utf8"),
+      );
+      assert.equal(decoded.length, 1);
+      assert.equal(decoded[0].path, "a.txt");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

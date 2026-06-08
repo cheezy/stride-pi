@@ -9,10 +9,13 @@
  *   - synthesized new-file patches for untracked paths via
  *     `git diff --no-index --no-color /dev/null <path>`
  *
- * The PUT is wrapped in `{ "changed_files": [...] }` per
- * docs/api/put_tasks_id_changed_files.md. Every failure path degrades to a
- * silent no-op — capture and upload errors must never block the agent's
- * completion request.
+ * The PUT sends the D61 transport-encoded envelope
+ * `{ "changed_files": { "encoding": "base64", "data": "<b64>" } }` per
+ * docs/api/put_tasks_id_changed_files.md so an edge request filter (WAF) does
+ * not misread a unified code diff as an attack and drop the upload; the server
+ * decodes it back to the same list. Capture and encoding errors degrade to a
+ * silent no-op, and a failed upload is surfaced to stderr (never the token)
+ * rather than thrown — errors must never block the agent's completion request.
  */
 
 import { execFileSync } from "node:child_process";
@@ -197,17 +200,39 @@ export async function putChangedFiles(
 ): Promise<void> {
   if (!apiBase || !token || !taskId) return;
   const url = `${apiBase.replace(/\/+$/, "")}/api/tasks/${taskId}/changed_files`;
+  // D61: send the transport-encoded envelope
+  // {"changed_files":{"encoding":"base64","data":"<b64>"}} rather than the raw
+  // array so an edge request filter does not misread a code diff as an attack
+  // and drop the upload. The server decodes it back to the same list. Fall back
+  // to the raw {"changed_files":[...]} object (never a bare array) if encoding
+  // fails.
+  let body: string;
   try {
-    await fetch(url, {
+    const b64 = Buffer.from(JSON.stringify(files), "utf8").toString("base64");
+    body = JSON.stringify({ changed_files: { encoding: "base64", data: b64 } });
+  } catch {
+    body = JSON.stringify({ changed_files: files });
+  }
+
+  try {
+    const resp = await fetch(url, {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ changed_files: files }),
+      body,
     });
+    if (!resp.ok) {
+      // Surface a failed upload instead of dropping it silently. The diff is
+      // non-fatal to completion, so we warn rather than throw.
+      console.error(
+        `stride-hook: changed_files upload failed (HTTP ${resp.status}) for task ${taskId}`,
+      );
+    }
   } catch {
     // fire-and-forget — never block completion on upload failure
+    console.error(`stride-hook: changed_files upload failed for task ${taskId}`);
   }
 }
 
