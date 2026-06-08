@@ -214,8 +214,7 @@ structured = json.loads(m.group(1))  # the parsed schema
   - `issues_found` ← `sum(structured.issue_counts.values())`
   - `acceptance_criteria_checked` ← `len(structured.acceptance_criteria)`
   - `dispatched: true`, `duration_ms: <wall-clock ms>`
-- Structured fields (copied verbatim from the parsed JSON, but **omit any key the agent did not emit** — never send empty placeholders):
-  - `status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, `schema_version`
+- Structured fields — **copy the reviewer's entire parsed JSON object verbatim** into `reviewer_result`, then overlay the legacy fields above on top. Do **not** maintain an allow-list of which structured keys to copy: whatever the agent emitted is persisted as-is, so any field the schema gains later flows through automatically. The structured key-set is owned by `agents/task-reviewer.md` (mirrored by the inline `stride-task-reviewer` skill and the dispatched ext-agent); passthrough it, never re-enumerate it here. Concretely, the reviewer currently emits `status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, and `schema_version` — but treat that as illustrative, not exhaustive. Because you copy the parsed JSON verbatim, keys the agent did not emit are simply absent (no empty placeholders to send).
 
 **Worked example.** Given the reviewer's fenced block below…
 

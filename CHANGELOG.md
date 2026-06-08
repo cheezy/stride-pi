@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-08
+
+Bundled release covering two ports from the main `stride` plugin (G217 + G218 parity).
+
+### Added
+
+- **`extensions/hook-bridge/changed-files.ts`** (W1047 / D61) — `putChangedFiles` now uploads the per-file diff snapshot to `/api/tasks/:id/changed_files` as a **transport-encoded envelope** — `{"changed_files":{"encoding":"base64","data":"<base64>"}}` — instead of the raw `{"changed_files":[...]}` array. An edge request filter (WAF) in front of the Stride server can misread a dense code diff as an attack payload and silently drop the upload, leaving `changed_files` empty in the review queue; base64-wrapping the body (via `Buffer.from(JSON.stringify(files)).toString("base64")`) neutralizes that false positive while the server decodes it back to the identical list. Falls back to the raw `{"changed_files":files}` object (never a bare array) if encoding fails, and a non-2xx response (and any fetch error) is surfaced via `console.error` without throwing — the bearer token is never logged. `changed-files.test.ts` asserts the encoded envelope, raw-text absence, base64 round-trip, and the non-2xx warning (`node --test` 79/0).
+
+### Changed
+
+- **`skills/stride-workflow/SKILL.md`, `skills/stride-subagent-workflow/SKILL.md`** (W1055 / D63) — The "Extracting the structured review block" guidance built `reviewer_result` from an enumerated copy-list of structured keys. Pi's lists already included `project_checks`, so there was no active drop, but the enumerated pattern is the latent defect that silently dropped `project_checks` on sibling plugins. Both skills now use a **verbatim passthrough**: copy the reviewer's entire parsed JSON object into `reviewer_result` and overlay only the legacy summary fields — so any field the schema gains flows through automatically with no consumer edit.
+- **`extensions/subagent-dispatch/agents/stride-task-reviewer.md`, `skills/stride-task-reviewer/SKILL.md`** (W1055 / W1049) — Both reviewer surfaces gain an explicit **consumption invariant**: the canonical schema is the only place the structured key-set is enumerated, and the completion path MUST persist the reviewer's emitted JSON verbatim and MUST NOT maintain its own allow-list of keys to copy.
+
+### Backward compatibility
+
+Wire-shape: the `changed_files` envelope requires a Stride server that accepts the `base64` / `gzip+base64` encodings on `/changed_files` (ships in the kanban repo); the raw-object fallback path remains compatible with the prior shape. The `reviewer_result` changes are documentation/skill-instruction only — `project_checks[]` already existed, was already enumerated by Pi, and is already rendered by the review queue; this release hardens the pattern so it cannot regress. No `.stride.md` / `.stride_auth.md` / `.gitignore` changes required. Not distributed through a marketplace.
+
+### Source
+
+W1047 (D61 base64 changed_files transport port), W1055 (D63 passthrough hardening + W1049 consumption invariant). Mirrors the main `stride` plugin's 1.22.0 (D61) and 1.22.1 (project_checks) releases.
+
 ## [1.3.0] - 2026-06-07
 
 Parity + correctness release. Closes the full stride-pi-vs-stride gap audit (goal G166): brings every skill, agent, and TypeScript extension up to the canonical Claude Code plugin's feature set — schema_version 1.3 review reports with `security_considerations`, the missing `task-enricher` subagent, the `## after_goal` `GOAL_*` env fix, claim-baseline `changed_files` anchoring, and a zero-config default install — while keeping the intentional Pi-specific adaptations explicit.
