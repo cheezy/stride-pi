@@ -20,7 +20,7 @@ Pi (https://github.com/badlogic/pi-mono) does not ship with native subagent disp
 - **Preferred — `dispatch_agent` extension:** when the `subagent-dispatch` extension is loaded, a `dispatch_agent(agent, prompt)` tool runs any of the **5** agents (`stride-task-enricher`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`) in an isolated `pi -p` subprocess. Record the result in `explorer_result` / `reviewer_result` with the **dispatched** shape.
 - **Fallback — inline skills:** if you installed with `--no-extensions` (or on a Pi that can't load extensions), run the matching inline skills (`stride-enriching-tasks`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`) in your main context. Because you genuinely performed the work, still use the **dispatched** result shape — the self-reported skip form is only for steps the decision matrix told you to skip.
 
-`task-enricher` runs **before claiming** a sparse task (enrich → PATCH → re-fetch → claim); the others run after claim per the `stride-subagent-workflow` decision matrix. The `task-reviewer` emits a `schema_version` 1.3 structured review block (with `security_considerations` and `project_checks`).
+`task-enricher` runs **before claiming** a sparse task (enrich → PATCH → re-fetch → claim); the others run after claim per the `stride-subagent-workflow` decision matrix. The `task-reviewer` emits a `schema_version` 1.4 structured review block (with `security_considerations` and `project_checks`; the `project_checks` per-entry `status` enum is `met`/`not_met`/`not_applicable` with the full checklist emitted).
 
 ## Workflow Sequence
 
