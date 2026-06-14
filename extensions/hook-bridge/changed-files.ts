@@ -131,9 +131,23 @@ export function captureChangedFiles(baseRef: string, cwd: string): ChangedFile[]
     : [];
   const untrackedSet = new Set(untrackedFiles);
 
+  // Exclude the hook's OWN bookkeeping artifacts (D67): the upload-state file
+  // and the on-disk snapshot live at the repo root and otherwise pass both
+  // nets — .stride-diff-upload-state as an untracked entry, and either of them
+  // as a tracked diff once a project's after_doing auto-commit has staged them.
+  // git's name-only / ls-files output is repo-root-relative, so the exact
+  // whole-string match anchors to the ROOT artifacts only; a same-named file in
+  // a subdirectory (e.g. sub/.stride-changed-files.json) has a path prefix and
+  // is still captured.
+  const HOOK_STATE_ARTIFACTS = new Set([
+    DIFF_UPLOAD_STATE_FILE,
+    CHANGED_FILES_SNAPSHOT_FILE,
+  ]);
+
   const seen = new Set<string>();
   const allFiles: string[] = [];
   for (const f of [...trackedFiles, ...untrackedFiles]) {
+    if (HOOK_STATE_ARTIFACTS.has(f)) continue;
     if (!seen.has(f)) {
       seen.add(f);
       allFiles.push(f);
@@ -197,8 +211,8 @@ export async function putChangedFiles(
   token: string,
   taskId: string,
   files: ChangedFile[],
-): Promise<void> {
-  if (!apiBase || !token || !taskId) return;
+): Promise<number> {
+  if (!apiBase || !token || !taskId) return 0;
   const url = `${apiBase.replace(/\/+$/, "")}/api/tasks/${taskId}/changed_files`;
   // D61: send the transport-encoded envelope
   // {"changed_files":{"encoding":"base64","data":"<b64>"}} rather than the raw
@@ -230,10 +244,95 @@ export async function putChangedFiles(
         `stride-hook: changed_files upload failed (HTTP ${resp.status}) for task ${taskId}`,
       );
     }
+    return resp.status;
   } catch {
     // fire-and-forget — never block completion on upload failure
     console.error(`stride-hook: changed_files upload failed for task ${taskId}`);
+    return 0;
   }
+}
+
+export const CHANGED_FILES_SNAPSHOT_FILE = ".stride-changed-files.json";
+export const DIFF_UPLOAD_STATE_FILE = ".stride-diff-upload-state";
+
+/**
+ * Persist the captured snapshot to `.stride-changed-files.json`. Best-effort:
+ * a write failure (e.g. cwd does not exist) is swallowed, never thrown. Shared
+ * by finalizeAfterDoing and selfHealChangedFilesUpload so both produce the
+ * identical on-disk artifact.
+ */
+function writeSnapshot(cwd: string, snapshot: ChangedFile[]): void {
+  try {
+    fs.writeFileSync(
+      path.join(cwd, CHANGED_FILES_SNAPSHOT_FILE),
+      JSON.stringify(snapshot),
+      { encoding: "utf-8" },
+    );
+  } catch {
+    // best-effort; not fatal
+  }
+}
+
+/**
+ * Record the outcome of a changed_files upload to `.stride-diff-upload-state`.
+ *
+ * The file holds ONLY the task id and the HTTP status code — never the API URL
+ * or bearer token (W1094 security contract). Mirrors stride-hook.sh's
+ * record_diff_upload_state byte-for-byte:
+ *
+ *   task_id=<id>
+ *   http_code=<code>
+ *
+ * Best-effort: a write failure is swallowed. A missing state file means "no
+ * healthy upload on record", which makes the before_review self-heal re-upload.
+ */
+export function recordDiffUploadState(
+  cwd: string,
+  taskId: string,
+  httpCode: number,
+): void {
+  try {
+    fs.writeFileSync(
+      path.join(cwd, DIFF_UPLOAD_STATE_FILE),
+      `task_id=${taskId}\nhttp_code=${httpCode}\n`,
+      { encoding: "utf-8", mode: 0o600 },
+    );
+  } catch {
+    // best-effort; not fatal
+  }
+}
+
+/**
+ * Read `.stride-diff-upload-state`, returning the recorded task id and HTTP
+ * code. httpCode is returned as a string so callers can mirror the shell's
+ * `case "$_state_code" in 2*)` prefix test. A missing file or missing keys
+ * degrades to undefined; never throws.
+ */
+export function readDiffUploadState(cwd: string): {
+  taskId: string | undefined;
+  httpCode: string | undefined;
+} {
+  const file = path.join(cwd, DIFF_UPLOAD_STATE_FILE);
+  if (!fs.existsSync(file)) return { taskId: undefined, httpCode: undefined };
+
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf-8");
+  } catch {
+    return { taskId: undefined, httpCode: undefined };
+  }
+
+  let taskId: string | undefined;
+  let httpCode: string | undefined;
+  for (const line of text.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq);
+    const value = line.slice(eq + 1);
+    if (key === "task_id") taskId = value;
+    else if (key === "http_code") httpCode = value;
+  }
+  return { taskId, httpCode };
 }
 
 export interface FinalizeOptions {
@@ -245,7 +344,10 @@ export interface FinalizeOptions {
 
 /**
  * After-doing finalizer: capture diffs, persist the snapshot to
- * `.stride-changed-files.json`, and fire-and-forget PUT it to the server.
+ * `.stride-changed-files.json`, fire-and-forget PUT it to the server, and
+ * record the upload outcome (task id + HTTP code) to
+ * `.stride-diff-upload-state` so the before_review self-heal can tell whether
+ * the diff already landed.
  *
  * Every error path degrades to a no-op. Returns once the PUT settles (or
  * fails); callers may either await the promise or drop it on the floor —
@@ -260,22 +362,61 @@ export async function finalizeAfterDoing(opts: FinalizeOptions): Promise<void> {
     snapshot = [];
   }
 
-  try {
-    fs.writeFileSync(
-      path.join(cwd, ".stride-changed-files.json"),
-      JSON.stringify(snapshot),
-      { encoding: "utf-8" },
-    );
-  } catch {
-    // best-effort; not fatal
-  }
+  writeSnapshot(cwd, snapshot);
 
   if (!opts.taskId) return;
   const apiBase = extractApiBase(command);
   const token = extractToken(command);
   if (!apiBase || !token) return;
 
-  await putChangedFiles(apiBase, token, opts.taskId, snapshot);
+  const code = await putChangedFiles(apiBase, token, opts.taskId, snapshot);
+  recordDiffUploadState(cwd, opts.taskId, code);
+}
+
+/**
+ * Before-review self-heal: re-upload the changed-files snapshot when the
+ * after_doing finalize never landed it. Ports stride-hook.sh's
+ * self_heal_changed_files_upload (the HOOK_NAME gate lives in the caller, which
+ * only invokes this on the before_review event).
+ *
+ * Re-uploads when the recorded state is missing, was written for a different
+ * task, or carries a non-2xx HTTP code. When the state already shows a 2xx for
+ * this task, it is a no-op (the diff is already on the server) and the existing
+ * snapshot is left untouched. Credentials are resolved BEFORE re-capturing so a
+ * missing token leaves the prior snapshot intact rather than clobbering it.
+ *
+ * Best-effort: every error path degrades to a no-op; never throws.
+ */
+export async function selfHealChangedFilesUpload(
+  opts: FinalizeOptions,
+): Promise<void> {
+  const { cwd, command } = opts;
+  if (!opts.taskId) return;
+
+  // Already healthy? A recorded 2xx for this exact task means the after_doing
+  // upload landed — nothing to heal, and we must not overwrite the snapshot.
+  const state = readDiffUploadState(cwd);
+  if (state.taskId === opts.taskId && (state.httpCode ?? "").startsWith("2")) {
+    return;
+  }
+
+  // Resolve credentials before touching the snapshot so a missing token leaves
+  // the prior (possibly stale) snapshot intact rather than clobbering it.
+  const apiBase = extractApiBase(command);
+  const token = extractToken(command);
+  if (!apiBase || !token) return;
+
+  let snapshot: ChangedFile[] = [];
+  try {
+    snapshot = captureChangedFiles(opts.baseRef ?? "", cwd);
+  } catch {
+    snapshot = [];
+  }
+
+  writeSnapshot(cwd, snapshot);
+
+  const code = await putChangedFiles(apiBase, token, opts.taskId, snapshot);
+  recordDiffUploadState(cwd, opts.taskId, code);
 }
 
 const ENV_CACHE_FILE = ".stride-env-cache";

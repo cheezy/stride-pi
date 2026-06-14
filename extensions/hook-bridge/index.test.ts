@@ -23,6 +23,13 @@ import {
   AFTER_GOAL_ENV_KEYS,
 } from "./after-goal-detector.ts";
 import { runAfterGoalAndCleanup } from "./after-goal-runner.ts";
+import {
+  COMMAND_OUTPUT_TAIL_LINES,
+  formatHookResultJson,
+  tailLines,
+  type HookResult,
+} from "./hook-result.ts";
+import { resolveClaimEnvCache, type TaskEnv } from "./env-cache.ts";
 
 // Build the Claude/Gemini-style Bash-tool wrapper transport shape — used
 // when Pi's tool_result event delivers the raw response via event.content
@@ -346,5 +353,121 @@ describe("runAfterGoalAndCleanup", () => {
       deleteEnvCache: () => calls.push("delete_cache"),
     });
     assert.deepEqual(calls, ["after_goal", "delete_cache"]);
+  });
+});
+
+describe("formatHookResultJson commands_output (D65)", () => {
+  function successResult(overrides: Partial<HookResult> = {}): HookResult {
+    return {
+      hook: "after_doing",
+      success: true,
+      exitCode: 0,
+      output: "$ mix test\nall green",
+      durationMs: 1234,
+      commandsOutput: [{ command: "mix test", output: "all green" }],
+      ...overrides,
+    };
+  }
+
+  it("includes a tail-truncated commands_output array on the success shape", () => {
+    const json = JSON.parse(formatHookResultJson(successResult()));
+    assert.equal(json.status, "success");
+    assert.deepEqual(json.commands_output, [{ command: "mix test", output: "all green" }]);
+    // Existing fields retained for the after_goal forwarding consumer.
+    assert.equal(json.exit_code, 0);
+    assert.equal(json.output, "$ mix test\nall green");
+    assert.equal(json.duration_ms, 1234);
+  });
+
+  it("defaults commands_output to [] on a success result that carries none", () => {
+    const json = JSON.parse(formatHookResultJson(successResult({ commandsOutput: undefined })));
+    assert.deepEqual(json.commands_output, []);
+  });
+
+  it("leaves the failure shape unchanged (no commands_output key)", () => {
+    const failed: HookResult = {
+      hook: "after_doing",
+      success: false,
+      exitCode: 1,
+      output: "$ mix test\nboom",
+      failedCommand: "mix test",
+      durationMs: 9,
+      // Even if a commandsOutput happened to be attached, the failure branch must not emit it.
+      commandsOutput: [{ command: "mix test", output: "boom" }],
+    };
+    const json = JSON.parse(formatHookResultJson(failed));
+    assert.equal(json.status, "failed");
+    assert.equal(json.failed_command, "mix test");
+    assert.ok(!("commands_output" in json), "failure shape must not carry commands_output");
+  });
+
+  it("safely encodes output containing JSON-like text without injecting sibling fields", () => {
+    const malicious = '","injected":"x","output":"';
+    const json = JSON.parse(
+      formatHookResultJson(successResult({ commandsOutput: [{ command: "echo", output: malicious }] })),
+    );
+    assert.equal(json.injected, undefined, "JSON-like output must not inject a sibling field");
+    assert.equal(json.commands_output[0].output, malicious, "output round-trips intact");
+  });
+});
+
+describe("tailLines (D65 tail truncation)", () => {
+  it("returns the text unchanged when at or under the line cap", () => {
+    const text = Array.from({ length: COMMAND_OUTPUT_TAIL_LINES }, (_, i) => `line ${i}`).join("\n");
+    assert.equal(tailLines(text, COMMAND_OUTPUT_TAIL_LINES), text);
+  });
+
+  it("keeps only the last N lines and prepends a truncation marker when over the cap", () => {
+    const total = COMMAND_OUTPUT_TAIL_LINES + 10;
+    const text = Array.from({ length: total }, (_, i) => `line ${i}`).join("\n");
+    const result = tailLines(text, COMMAND_OUTPUT_TAIL_LINES);
+    assert.ok(result.startsWith("…(truncated, 10 earlier lines)\n"));
+    assert.ok(result.includes(`line ${total - 1}`), "the last line is kept");
+    assert.ok(!result.includes("\nline 9\n"), "an early line is dropped");
+    // Marker line + the last N kept lines.
+    assert.equal(result.split("\n").length, COMMAND_OUTPUT_TAIL_LINES + 1);
+  });
+
+  it("returns empty input unchanged", () => {
+    assert.equal(tailLines("", COMMAND_OUTPUT_TAIL_LINES), "");
+  });
+});
+
+describe("resolveClaimEnvCache — unconditional claim-time base-ref refresh (G224)", () => {
+  it("stamps the base ref onto parsed task fields", () => {
+    const parsed: TaskEnv = { TASK_ID: "3700", TASK_IDENTIFIER: "D80" };
+    const result = resolveClaimEnvCache(parsed, "abc123", {});
+    assert.deepEqual(result, { TASK_ID: "3700", TASK_IDENTIFIER: "D80", TASK_BASE_REF: "abc123" });
+  });
+
+  it("refreshes the base ref on an empty parse, preserving existing identity lines", () => {
+    const existing: TaskEnv = { TASK_ID: "3700", TASK_IDENTIFIER: "D80", TASK_BASE_REF: "oldref" };
+    const result = resolveClaimEnvCache({}, "newref", existing);
+    // Identity lines preserved; only the stale base ref is refreshed.
+    assert.deepEqual(result, { TASK_ID: "3700", TASK_IDENTIFIER: "D80", TASK_BASE_REF: "newref" });
+  });
+
+  it("returns null on an empty parse when HEAD is unresolvable (non-git dir)", () => {
+    const result = resolveClaimEnvCache({}, "", { TASK_ID: "3700", TASK_BASE_REF: "oldref" });
+    assert.equal(result, null);
+  });
+
+  it("writes just the base ref on an empty parse with no prior cache", () => {
+    const result = resolveClaimEnvCache({}, "abc123", {});
+    assert.deepEqual(result, { TASK_BASE_REF: "abc123" });
+  });
+
+  it("keeps parsed fields without a base ref when HEAD is unresolvable", () => {
+    const result = resolveClaimEnvCache({ TASK_ID: "3700" }, "", {});
+    assert.deepEqual(result, { TASK_ID: "3700" });
+    assert.ok(result && !("TASK_BASE_REF" in result));
+  });
+
+  it("does not mutate its arguments (pure)", () => {
+    const parsed: TaskEnv = Object.freeze({ TASK_ID: "3700" });
+    const existing: TaskEnv = Object.freeze({ TASK_IDENTIFIER: "D80", TASK_BASE_REF: "old" });
+    // Both calls would throw if the function mutated a frozen input.
+    assert.doesNotThrow(() => resolveClaimEnvCache(parsed, "abc", existing));
+    assert.doesNotThrow(() => resolveClaimEnvCache({}, "abc", existing));
   });
 });

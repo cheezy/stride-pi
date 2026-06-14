@@ -7,6 +7,8 @@ import * as path from "node:path";
 
 import {
   BIN_PLACEHOLDER,
+  CHANGED_FILES_SNAPSHOT_FILE,
+  DIFF_UPLOAD_STATE_FILE,
   MAX_LINES,
   TRUNC_MARKER,
   captureChangedFiles,
@@ -14,7 +16,10 @@ import {
   extractToken,
   finalizeAfterDoing,
   putChangedFiles,
+  readDiffUploadState,
   readFinalizerEnv,
+  recordDiffUploadState,
+  selfHealChangedFilesUpload,
 } from "./changed-files.ts";
 
 function gitInit(cwd: string): void {
@@ -684,6 +689,430 @@ describe("changed-files anchors to the claim-time TASK_BASE_REF", () => {
 
       const files = captureChangedFiles(baseRef ?? "", dir).map((r) => r.path).sort();
       assert.deepEqual(files, ["a.txt", "b.txt"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("putChangedFiles return code", () => {
+  let stub: FetchStub | null = null;
+
+  afterEach(() => {
+    if (stub) {
+      stub.restore();
+      stub = null;
+    }
+  });
+
+  it("returns the HTTP status code on a 2xx response", async () => {
+    stub = stubFetch(() => new Response("{}", { status: 200 }));
+    const code = await putChangedFiles("https://api.example.com", "tok", "W1", []);
+    assert.equal(code, 200);
+  });
+
+  it("returns the HTTP status code on a non-2xx response", async () => {
+    stub = stubFetch(() => new Response("nope", { status: 404 }));
+    const code = await putChangedFiles("https://api.example.com", "tok", "W1", []);
+    assert.equal(code, 404);
+  });
+
+  it("returns 0 when fetch itself rejects (transport failure)", async () => {
+    stub = stubFetch(() => {
+      throw new Error("network down");
+    });
+    const code = await putChangedFiles("https://api.example.com", "tok", "W1", []);
+    assert.equal(code, 0);
+  });
+
+  it("returns 0 without firing a request when a credential is empty", async () => {
+    stub = stubFetch(() => new Response("{}", { status: 200 }));
+    assert.equal(await putChangedFiles("", "tok", "W1", []), 0);
+    assert.equal(await putChangedFiles("https://api.example.com", "", "W1", []), 0);
+    assert.equal(await putChangedFiles("https://api.example.com", "tok", "", []), 0);
+    assert.equal(stub.calls.length, 0);
+  });
+});
+
+describe("recordDiffUploadState / readDiffUploadState", () => {
+  it("writes exactly task_id and http_code lines and round-trips", () => {
+    const dir = mktemp();
+    try {
+      recordDiffUploadState(dir, "W999", 200);
+      const contents = fs.readFileSync(
+        path.join(dir, DIFF_UPLOAD_STATE_FILE),
+        "utf-8",
+      );
+      assert.equal(contents, "task_id=W999\nhttp_code=200\n");
+      const state = readDiffUploadState(dir);
+      assert.equal(state.taskId, "W999");
+      assert.equal(state.httpCode, "200");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never writes the API URL or bearer token into the state file", () => {
+    const dir = mktemp();
+    try {
+      // The writer only ever receives (cwd, taskId, httpCode) — assert the
+      // load-bearing security contract: no credentials reach the file.
+      recordDiffUploadState(dir, "W999", 200);
+      const contents = fs.readFileSync(
+        path.join(dir, DIFF_UPLOAD_STATE_FILE),
+        "utf-8",
+      );
+      assert.ok(!contents.includes("Bearer"), "token must not appear in state file");
+      assert.ok(!contents.includes("http://"), "URL must not appear in state file");
+      assert.ok(!contents.includes("https://"), "URL must not appear in state file");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined values when the state file is absent", () => {
+    const dir = mktemp();
+    try {
+      const state = readDiffUploadState(dir);
+      assert.equal(state.taskId, undefined);
+      assert.equal(state.httpCode, undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tolerates a malformed/partial state file without throwing", () => {
+    const dir = mktemp();
+    try {
+      fs.writeFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "task_id=W7\n");
+      const state = readDiffUploadState(dir);
+      assert.equal(state.taskId, "W7");
+      assert.equal(state.httpCode, undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("finalizeAfterDoing records upload state", () => {
+  let stub: FetchStub | null = null;
+
+  afterEach(() => {
+    if (stub) {
+      stub.restore();
+      stub = null;
+    }
+  });
+
+  it("records task_id + http_code=200 after a successful PUT", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await finalizeAfterDoing({
+        cwd: dir,
+        command: `curl "https://api.example.com/api/tasks/W999/complete" -H "Authorization: Bearer t"`,
+        taskId: "W999",
+        baseRef: base,
+      });
+
+      const state = readDiffUploadState(dir);
+      assert.equal(state.taskId, "W999");
+      assert.equal(state.httpCode, "200");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records the non-2xx http_code when the PUT fails", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("err", { status: 500 }));
+      const originalError = console.error;
+      console.error = () => {};
+      try {
+        await finalizeAfterDoing({
+          cwd: dir,
+          command: `curl "https://api.example.com/api/tasks/W999/complete" -H "Authorization: Bearer t"`,
+          taskId: "W999",
+          baseRef: base,
+        });
+      } finally {
+        console.error = originalError;
+      }
+
+      assert.equal(readDiffUploadState(dir).httpCode, "500");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes no state file when the PUT is skipped (no token)", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await finalizeAfterDoing({
+        cwd: dir,
+        command: `curl "https://api.example.com/api/tasks/W999/complete"`,
+        taskId: "W999",
+        baseRef: base,
+      });
+
+      assert.ok(!fs.existsSync(path.join(dir, DIFF_UPLOAD_STATE_FILE)));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("selfHealChangedFilesUpload", () => {
+  let stub: FetchStub | null = null;
+  const command = `curl "https://api.example.com/api/tasks/W999/complete" -H "Authorization: Bearer t"`;
+
+  afterEach(() => {
+    if (stub) {
+      stub.restore();
+      stub = null;
+    }
+  });
+
+  it("skips re-upload when state shows a 2xx for the same task, leaving the snapshot untouched", async () => {
+    const dir = mktemp();
+    try {
+      recordDiffUploadState(dir, "W999", 200);
+      const sentinel = JSON.stringify([{ path: "sentinel.txt", diff: "x" }]);
+      fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), sentinel);
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: undefined });
+
+      assert.equal(stub.calls.length, 0, "must not re-upload a healthy diff");
+      assert.equal(
+        fs.readFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), "utf-8"),
+        sentinel,
+        "snapshot must be left untouched",
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-uploads and records state when no prior state exists", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(readDiffUploadState(dir).httpCode, "200");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-uploads when state shows a non-2xx for the same task", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+      recordDiffUploadState(dir, "W999", 500);
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(readDiffUploadState(dir).httpCode, "200");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-uploads when state shows a 2xx for a DIFFERENT task", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+      recordDiffUploadState(dir, "W111", 200);
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(readDiffUploadState(dir).taskId, "W999");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not re-upload or clobber the snapshot when the command has no credentials", async () => {
+    const dir = mktemp();
+    try {
+      const sentinel = JSON.stringify([{ path: "sentinel.txt", diff: "x" }]);
+      fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), sentinel);
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({
+        cwd: dir,
+        command: `curl "https://api.example.com/api/tasks/W999/complete"`,
+        taskId: "W999",
+        baseRef: undefined,
+      });
+
+      assert.equal(stub.calls.length, 0);
+      assert.equal(
+        fs.readFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), "utf-8"),
+        sentinel,
+        "snapshot must be preserved when credentials are unavailable",
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns without a request when taskId is undefined", async () => {
+    const dir = mktemp();
+    try {
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: undefined, baseRef: undefined });
+      assert.equal(stub.calls.length, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never throws when the PUT transport fails", async () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => {
+        throw new Error("network down");
+      });
+      const originalError = console.error;
+      console.error = () => {};
+      try {
+        await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+      } finally {
+        console.error = originalError;
+      }
+      // Transport failure records http_code=0, which a later self-heal treats
+      // as unhealthy and retries.
+      assert.equal(readDiffUploadState(dir).httpCode, "0");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("captureChangedFiles excludes the hook's own state artifacts (D67)", () => {
+  it("excludes an untracked .stride-diff-upload-state from the snapshot", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed");
+      // A real untracked change plus the hook's own untracked artifact.
+      fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+      fs.writeFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "task_id=W1\nhttp_code=200\n");
+
+      const paths = captureChangedFiles(base, dir).map((r) => r.path);
+      assert.ok(paths.includes("a.txt"), "the real change must still be captured");
+      assert.ok(!paths.includes(DIFF_UPLOAD_STATE_FILE), "the upload-state artifact must be excluded");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes a committed-and-modified .stride-changed-files.json (tracked diff)", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), "[]");
+      const base = gitCommit(dir, "seed + snapshot");
+      // Modify both the artifact and a real tracked file.
+      fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), '[{"path":"x"}]');
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed-changed\n");
+
+      const paths = captureChangedFiles(base, dir).map((r) => r.path);
+      assert.ok(paths.includes("seed.txt"), "the real tracked change must still be captured");
+      assert.ok(!paths.includes(CHANGED_FILES_SNAPSHOT_FILE), "the snapshot artifact must be excluded even when tracked");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes an untracked .stride-changed-files.json snapshot", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed");
+      fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+      fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), "[]");
+
+      const paths = captureChangedFiles(base, dir).map((r) => r.path);
+      assert.deepEqual(paths.sort(), ["a.txt"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still captures a same-named file in a subdirectory (anchored to repo-root only)", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed");
+      // Root artifact (excluded) + same-named files nested in a subdir (kept).
+      fs.writeFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "task_id=W1\nhttp_code=200\n");
+      fs.mkdirSync(path.join(dir, "sub"));
+      fs.writeFileSync(path.join(dir, "sub", DIFF_UPLOAD_STATE_FILE), "not a hook artifact\n");
+      fs.writeFileSync(path.join(dir, "sub", CHANGED_FILES_SNAPSHOT_FILE), "[]\n");
+
+      const paths = captureChangedFiles(base, dir).map((r) => r.path).sort();
+      assert.deepEqual(paths, [`sub/${CHANGED_FILES_SNAPSHOT_FILE}`, `sub/${DIFF_UPLOAD_STATE_FILE}`]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("yields an empty snapshot when only the root artifacts changed", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed");
+      fs.writeFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "task_id=W1\nhttp_code=200\n");
+      fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), "[]");
+
+      assert.deepEqual(captureChangedFiles(base, dir), []);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

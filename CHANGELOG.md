@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-14
+
+Parity release: brings the Pi variant up to canonical stride **v1.24.0–v1.28.0** (goal G233). Covers the diff-upload survival + state self-heal work, the hook-state-artifact exclusion, the `commands_output` success shape, the unconditional claim-time base-ref refresh, and the G222/D66 reviewer-contract tightening across the skills and both lockstep reviewer-prompt copies. Feature minor (1.5.0 → 1.6.0).
+
+Two canonical items are **N/A for Pi** and were intentionally not ported: W1095 PowerShell parity (a single TypeScript implementation covers all platforms) and G224's persisted-output `jq` fallback (Pi derives the base ref from local git, not from the claim response JSON — only the unconditional-refresh hardening applies).
+
+### Added
+
+- **`extensions/hook-bridge/changed-files.ts`** (W1125 — W1093/W1094/W1096) — Diff-upload **survival + self-heal**. `putChangedFiles` now returns the HTTP status code; `finalizeAfterDoing` records the upload outcome to a new `.stride-diff-upload-state` file (task id + HTTP code **only** — never URL or token, mode `0o600`); a new `selfHealChangedFilesUpload` re-uploads the snapshot at `before_review` when the recorded state is missing, for a different task, or non-2xx (resolving credentials **before** overwriting the snapshot so a missing token leaves the prior snapshot intact).
+- **`extensions/hook-bridge/index.ts`** (W1125) — The `after_doing` diff snapshot is now captured and PUT **before** the gate commands run (post-gate refresh kept), so a gate failure/timeout no longer loses the diff; the `before_review` self-heal and claim/after_review cleanup of the state files are wired in; and the single `HOOK_TIMEOUT_MS = 120000` is replaced by a per-hook `HOOK_TIMEOUTS_MS` map (`after_doing` = 300000, others 60000).
+- **`extensions/hook-bridge/index.ts` / `hook-result.ts`** (D79 / D65) — The success hook-result shape now carries a tail-truncated `commands_output` array (`{command, output}` per command, last 50 lines, matching the canonical `tail -50`) so passing-gate output is structured rather than error-shaped. The failure shape is unchanged. `formatHookResultJson`, `tailLines`, and the `HookResult`/`CommandOutput` types were extracted into a pure `hook-result.ts` module so they are unit-testable without the Pi runtime.
+
+### Changed
+
+- **`extensions/hook-bridge/changed-files.ts`** (D78 — D67) — `captureChangedFiles` now excludes the hook's own root artifacts (`.stride-diff-upload-state` and `.stride-changed-files.json`) from its diff by an exact repo-root match, so they never leak into the snapshot even after an `after_doing` auto-commit stages them; a same-named file in a subdirectory is still captured.
+- **`extensions/hook-bridge/index.ts` / `env-cache.ts`** (D80 — G224 residual) — `TASK_BASE_REF` is now refreshed on **every** detected claim — even when the claim response cannot be parsed into task fields — preserving the existing `TASK_` identity lines and clearing the two state files, so a stale base ref from a prior claim can no longer make the `after_doing` diff span unrelated commits. Skipped silently when HEAD is unresolvable (non-git dir). The pure `resolveClaimEnvCache` merge policy and the env-cache key set were extracted into `env-cache.ts` for testability.
+- **`extensions/subagent-dispatch/agents/stride-task-reviewer.md`** and **`skills/stride-task-reviewer/SKILL.md`** (W1126 — W1073/D66, kept field-for-field identical) — Both reviewer-prompt copies gain the strict `not_assessed` verdict rule (`not_assessed` is reserved STRICTLY for a section the task itself left empty — a task-supplied section MUST get a real `passed`/`failed` verdict) and the `acceptance_criteria` 1:1 verbatim hard rule (exactly one entry per criterion line, verbatim, never split/merge/reword/add/drop; array length equals the task's criterion-line count).
+- **`skills/stride-workflow/SKILL.md`, `skills/stride-completing-tasks/SKILL.md`, `skills/stride-subagent-workflow/SKILL.md`** (W1127 — G222/D66 parity) — The reviewer dispatch in Step 6 (stride-workflow) and Phase 3 (stride-subagent-workflow) now passes **all 8** review fields the task supplies (`acceptance_criteria`, `pitfalls`, `patterns_to_follow`, `testing_strategy`, `security_considerations`, `description`, `what`, `why`) instead of 4; the `reviewer_result` extraction in stride-workflow is now a mechanical **whole-object copy** with a mandatory self-check (every reviewer section present; submitted `project_checks` count equals the reviewer's; `acceptance_criteria` count equals the task's criterion-line count — the W1099 `6/5` guard); `stride-completing-tasks` gains a **MANDATORY pre-submission self-check (hard gate)**; and `stride-workflow` gains the D66 re-review rule (a re-review must pass `acceptance_criteria` unchanged and keep the array identical to the task's canonical list). Mirrors canonical stride G222 (W1072–W1076) + the D66 self-check, with pi framing (the inline `stride-task-reviewer` skill name).
+- **`README.md`** — Documented the corrected hook timeout table (`after_doing` 300s) + time-budget note, the gitignored hook state artifacts and their exclusion from the snapshot, and the claim-time base-ref refresh semantics (including that the `jq` persisted-output fallback is N/A for Pi).
+- **`.gitignore`** — Added `.stride-diff-upload-state`, `.stride-env-cache`, and `.stride-changed-files.json`.
+
+### Forcing function
+
+The new `stride-completing-tasks` pre-submission **hard gate** will cause previously-passing **thin or count-inconsistent** self-reviews to fail at submit time. This is intended — the Kanban server now hard-rejects such reports, so the local gate catches them before the `/complete` call rather than after a server `422`.
+
+### Backward compatibility
+
+Hook-bridge wire shapes are additive: the success hook-result JSON gains `commands_output` (existing `exit_code`/`output`/`duration_ms` retained for the after_goal forwarding consumer); the failure shape is unchanged. `.stride-diff-upload-state` is a new gitignored temp file. The reviewer-prompt and skill changes are documentation/prompt tightening — `reviewer_result` is still persisted verbatim as `:jsonb`. The hook-bridge test suites pass (`node --test extensions/hook-bridge/*.test.ts` → 115/0).
+
+### Source
+
+Goal G233 (W1125, W1126, W1127, D78, D79, D80) — the Pi port of canonical stride v1.24.0–v1.28.0.
+
 ## [1.5.0] - 2026-06-08
 
 Parity release: brings the Pi variant to G220/G219 parity for the reviewer `project_checks` `not_applicable` status and full-checklist emission (canonical: stride v1.23.0, commit a4e7e6f, W1057). Feature minor (1.4.0 → 1.5.0).

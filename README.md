@@ -210,11 +210,17 @@ Whichever path you used, you genuinely performed the work. Use the **dispatched 
 | Hook | When | Blocking | Timeout |
 |------|------|----------|---------|
 | `before_doing` | After claiming a task | Yes | 60s |
-| `after_doing` | Before marking complete | Yes | 120s |
+| `after_doing` | Before marking complete | Yes | 300s |
 | `before_review` | After marking complete | Yes | 60s |
 | `after_review` | After review approval | Yes | 60s |
 
 **Blocking hooks** prevent the next step if any command fails. The agent must fix the issue and re-run the hook before proceeding.
+
+**Time budget:** `after_doing` gets the largest window (300s) because it runs the full quality-gate suite (tests, lint, build). The other hooks are quick pre/post actions and keep a tight 60s budget. The changed-files diff snapshot is captured and uploaded *before* the `after_doing` gate runs — and refreshed after it — so the diff survives even if a long-running gate exhausts the budget. If the upload still does not land, the `before_review` hook self-heals by re-attempting it on its own fresh budget.
+
+**Hook state artifacts (gitignore these):** the hook bridge writes three repo-root temp files — `.stride-env-cache`, `.stride-changed-files.json`, and `.stride-diff-upload-state` — and clears them at claim and after_review. Add all three to your `.gitignore` so they are never committed. The changed-files capture additionally excludes the two snapshot/upload-state artifacts (`.stride-changed-files.json` and `.stride-diff-upload-state`) from its own diff by an exact repo-root match, so they never leak into the snapshot even if a project's `after_doing` auto-commit happens to stage them (a same-named file inside a subdirectory is still captured).
+
+**Claim-time base-ref refresh:** a claim always opens a new task window, so on **every** detected claim curl the bridge refreshes `TASK_BASE_REF` in `.stride-env-cache` to the current `git rev-parse HEAD` and clears the two state files — even when the claim response cannot be parsed into task fields (in which case the existing `TASK_` identity lines are preserved and only the base ref is refreshed). This prevents a base ref recorded under a prior claim from surviving and making the `after_doing` diff span every commit since that older claim. The refresh is skipped silently when HEAD is unresolvable (e.g. a non-git directory). Note: the canonical shell hook's persisted-output `jq` fallback is **N/A for pi** — pi derives the base ref from local git (`git rev-parse HEAD`), not from the claim response JSON, so there is no oversized-response truncation path to recover from.
 
 ### Hook Execution Rules
 

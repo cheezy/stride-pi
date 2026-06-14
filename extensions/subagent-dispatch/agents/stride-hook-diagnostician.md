@@ -272,8 +272,8 @@ Suggested fix: Resolve conflicts in listed files. Open each file, find <<<< mark
 **Detection:** Duration ≥ timeout threshold AND output may be empty or truncated (the Pi hook-bridge reports timeouts with `exit_code: 124` and an output suffix `hook command timed out after <ms> ms`).
 
 **Timeout thresholds:**
-- The Pi hook-bridge (`extensions/hook-bridge/index.ts`) wraps each hook in a single `HOOK_TIMEOUT_MS = 120,000 ms` deadline and kills the child with SIGTERM (then SIGKILL after a 5,000 ms grace).
-- Cross-plugin / server-supplied per-hook reference thresholds: before_doing 60,000 ms · after_doing 120,000 ms · before_review 60,000 ms · after_review 60,000 ms.
+- The Pi hook-bridge (`extensions/hook-bridge/index.ts`) wraps each hook in a per-hook deadline from the `HOOK_TIMEOUTS_MS` map and kills the child with SIGTERM (then SIGKILL after a 5,000 ms grace).
+- Per-hook deadlines: before_doing 60,000 ms · after_doing 300,000 ms · before_review 60,000 ms · after_review 60,000 ms · after_goal 60,000 ms. (after_doing gets the largest window because it runs the full quality-gate suite.)
 
 **When timeout detected:**
 ```

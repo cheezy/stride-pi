@@ -21,3 +21,8 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Stride hook artifacts (runtime temp files — never committed)
+.stride-diff-upload-state
+.stride-env-cache
+.stride-changed-files.json

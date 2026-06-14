@@ -28,35 +28,45 @@ import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-a
 
 import { parseHookSection } from "./stride-md-parser.js";
 import { detectStrideHook, type StrideHookName } from "./curl-matcher.js";
-import { finalizeAfterDoing, readFinalizerEnv } from "./changed-files.js";
+import {
+  finalizeAfterDoing,
+  selfHealChangedFilesUpload,
+  readFinalizerEnv,
+  CHANGED_FILES_SNAPSHOT_FILE,
+  DIFF_UPLOAD_STATE_FILE,
+} from "./changed-files.js";
 import {
   responseHasAfterGoal,
   extractGoalEnvFromResult,
 } from "./after-goal-detector.js";
 import { runAfterGoalAndCleanup } from "./after-goal-runner.js";
+import {
+  type CommandOutput,
+  type HookResult,
+  COMMAND_OUTPUT_TAIL_LINES,
+  formatHookResultJson,
+  tailLines,
+} from "./hook-result.js";
+import {
+  type TaskEnv,
+  TASK_ENV_KEYS,
+  resolveClaimEnvCache,
+} from "./env-cache.js";
 
-const HOOK_TIMEOUT_MS = 120_000;
+// Per-hook timeout budgets. after_doing runs the full quality-gate suite
+// (tests/lint/build) so it gets the largest window; the others are quick
+// pre/post actions. The early changed-files snapshot is captured BEFORE the
+// after_doing gate runs (and re-attempted by the before_review self-heal), so
+// even if a long gate exhausts this budget the diff still survives. Matches the
+// README timeout table and the canonical stride hooks.json 300s after_doing.
+const HOOK_TIMEOUTS_MS: Record<StrideHookName, number> = {
+  before_doing: 60_000,
+  after_doing: 300_000,
+  before_review: 60_000,
+  after_review: 60_000,
+  after_goal: 60_000,
+};
 const KILL_GRACE_MS = 5_000;
-const TASK_ENV_KEYS = [
-  "TASK_ID",
-  "TASK_IDENTIFIER",
-  "TASK_TITLE",
-  "TASK_STATUS",
-  "TASK_COMPLEXITY",
-  "TASK_PRIORITY",
-  "TASK_BASE_REF",
-] as const;
-
-type TaskEnv = Partial<Record<(typeof TASK_ENV_KEYS)[number], string>>;
-
-interface HookResult {
-  hook: StrideHookName;
-  success: boolean;
-  exitCode: number;
-  output: string;
-  failedCommand?: string;
-  durationMs: number;
-}
 
 export default function (pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
@@ -64,6 +74,18 @@ export default function (pi: ExtensionAPI): void {
     const command = event.input.command;
     const hook = detectStrideHook("pre", command);
     if (hook !== "after_doing") return;
+
+    // Capture and PUT the diff snapshot BEFORE the after_doing gate runs, so a
+    // gate failure or timeout still leaves a usable snapshot on the server. The
+    // post-gate finalize below refreshes it with the gate's own changes. This
+    // pre-gate call is gated to after_doing by the early return above, so it
+    // never fires for before_doing/before_review/after_review/after_goal.
+    try {
+      const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
+      await finalizeAfterDoing({ cwd: ctx.cwd, command, taskId, baseRef });
+    } catch {
+      // intentional: never veto /complete on capture/upload failure
+    }
 
     const result = await runHook(hook, ctx);
     if (result && !result.success) {
@@ -73,8 +95,8 @@ export default function (pi: ExtensionAPI): void {
       };
     }
 
-    // Hook succeeded (or no hook configured). Capture per-file diffs and
-    // fire-and-forget PUT them to /api/tasks/:id/changed_files. Fail-soft:
+    // Gate succeeded (or no hook configured). Refresh the snapshot so any
+    // changes the gate itself produced (e.g. formatters) are captured. Fail-soft:
     // any error here must not block the agent's /complete curl.
     try {
       const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
@@ -95,13 +117,31 @@ export default function (pi: ExtensionAPI): void {
 
     if (hook === "before_doing") {
       const taskEnv = extractTaskEnvFromResult(event.content, event.details);
-      if (Object.keys(taskEnv).length > 0) {
-        // Anchor changed-files to the claim-time HEAD (computed now, not at
-        // completion). An empty ref is skipped by writeEnvCache, leaving
-        // changed-files to fall back to HEAD~1.
-        const baseRef = captureBaseRef(ctx.cwd);
-        if (baseRef) taskEnv.TASK_BASE_REF = baseRef;
-        writeEnvCache(ctx.cwd, taskEnv);
+      // Anchor changed-files to the claim-time HEAD (computed now, not at
+      // completion). G224: a claim always opens a new task window, so refresh
+      // TASK_BASE_REF on EVERY detected claim — even when the task-field parse
+      // yields {} — preserving any existing TASK_ identity lines. Otherwise a
+      // base ref from a prior claim survives and the after_doing diff spans
+      // every commit since that older claim. The resolve policy returns null
+      // (no write) only when the parse is empty AND HEAD is unresolvable.
+      const baseRef = captureBaseRef(ctx.cwd);
+      const resolved = resolveClaimEnvCache(taskEnv, baseRef, loadEnvCache(ctx.cwd));
+      if (resolved) writeEnvCache(ctx.cwd, resolved);
+      // Clear any leftover snapshot/upload-state from a prior task so a stale
+      // 2xx cannot suppress the new task's before_review self-heal. Runs on the
+      // claim regardless of whether task env parsed.
+      deleteDiffArtifacts(ctx.cwd);
+    }
+
+    // before_review self-heal: if the after_doing finalize never landed the
+    // diff (gate timeout, transport failure, non-2xx), re-upload it now on the
+    // fresh tool_result budget. Gated to before_review; fail-soft.
+    if (hook === "before_review") {
+      try {
+        const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
+        await selfHealChangedFilesUpload({ cwd: ctx.cwd, command, taskId, baseRef });
+      } catch {
+        // intentional: never disturb the already-succeeded /complete call
       }
     }
 
@@ -120,7 +160,10 @@ export default function (pi: ExtensionAPI): void {
       extractGoalEnv: extractGoalEnvFromResult,
       runAfterGoal: (goalEnv) => runHook("after_goal", ctx, goalEnv),
       emitResult: (agResult) => process.stdout.write(formatHookResultJson(agResult) + "\n"),
-      deleteEnvCache: () => deleteEnvCache(ctx.cwd),
+      deleteEnvCache: () => {
+        deleteEnvCache(ctx.cwd);
+        deleteDiffArtifacts(ctx.cwd);
+      },
     });
   });
 }
@@ -144,7 +187,7 @@ async function runHook(
   if (commands.length === 0) return null;
 
   const env = buildHookEnv(ctx.cwd, hook, extraEnv);
-  return runHookCommands(hook, commands, ctx.cwd, env, ctx.signal);
+  return runHookCommands(hook, commands, ctx.cwd, env, ctx.signal, HOOK_TIMEOUTS_MS[hook]);
 }
 
 async function runHookCommands(
@@ -153,12 +196,14 @@ async function runHookCommands(
   cwd: string,
   env: NodeJS.ProcessEnv,
   signal: AbortSignal | undefined,
+  hookTimeoutMs: number,
 ): Promise<HookResult> {
   const start = Date.now();
   const outputParts: string[] = [];
+  const commandsOutput: CommandOutput[] = [];
 
   for (const command of commands) {
-    const remaining = HOOK_TIMEOUT_MS - (Date.now() - start);
+    const remaining = hookTimeoutMs - (Date.now() - start);
     if (remaining <= 0) {
       return {
         hook,
@@ -172,6 +217,10 @@ async function runHookCommands(
 
     const step = await runOneCommand(command, cwd, env, remaining, signal);
     if (step.output) outputParts.push(`$ ${command}\n${step.output}`);
+    // Record this command's tail-truncated output for the success-path
+    // commands_output array (D65). Built incrementally; only attached to the
+    // success return below so the failure shape stays unchanged.
+    commandsOutput.push({ command, output: tailLines(step.output, COMMAND_OUTPUT_TAIL_LINES) });
     if (step.exitCode !== 0) {
       return {
         hook,
@@ -190,6 +239,7 @@ async function runHookCommands(
     exitCode: 0,
     output: outputParts.join("\n"),
     durationMs: Date.now() - start,
+    commandsOutput,
   };
 }
 
@@ -344,6 +394,22 @@ function deleteEnvCache(cwd: string): void {
 }
 
 /**
+ * Remove the changed-files snapshot and diff-upload-state artifacts. Called on
+ * claim (clear any prior task's leftovers) and after_review (final cleanup), so
+ * a stale 2xx upload-state can never suppress a later task's self-heal. Mirrors
+ * the rm cleanup in stride-hook.sh's claim and after_review paths. Best-effort.
+ */
+function deleteDiffArtifacts(cwd: string): void {
+  for (const name of [CHANGED_FILES_SNAPSHOT_FILE, DIFF_UPLOAD_STATE_FILE]) {
+    try {
+      fs.rmSync(path.join(cwd, name), { force: true });
+    } catch {
+      // best effort
+    }
+  }
+}
+
+/**
  * Capture the commit HEAD points at when the task is claimed (before_doing).
  * changed-files anchors its per-file diff to this baseline (via TASK_BASE_REF in
  * the env cache) so a multi-commit task reports the full claim->completion delta
@@ -480,34 +546,6 @@ function reportNonBlockingFailure(ctx: ExtensionContext, result: HookResult): vo
   } catch {
     // ctx.ui may be unavailable in -p / JSON mode
   }
-}
-
-/**
- * Serialize a HookResult into the cross-plugin JSON shape stride-hook.sh
- * emits on stdout for the after_goal lifecycle. The Pi agent reads this
- * JSON and forwards {exit_code, output, duration_ms} to
- * PATCH /api/tasks/:goal_id/after_goal. Field names are snake_case to
- * match the Stride API contract; pi's internal HookResult uses camelCase,
- * so this function does the translation.
- */
-function formatHookResultJson(result: HookResult): string {
-  if (result.success) {
-    return JSON.stringify({
-      hook: result.hook,
-      status: "success",
-      exit_code: result.exitCode,
-      output: result.output,
-      duration_ms: result.durationMs,
-    });
-  }
-  return JSON.stringify({
-    hook: result.hook,
-    status: "failed",
-    exit_code: result.exitCode,
-    output: result.output,
-    failed_command: result.failedCommand ?? null,
-    duration_ms: result.durationMs,
-  });
 }
 
 function truncate(text: string, max: number): string {
