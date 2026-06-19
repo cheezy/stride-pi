@@ -60,6 +60,7 @@ Use these fields to guide a focused exploration — never explore aimlessly.
    - Organize findings by key_file, with subsections for: file state, related tests, patterns found, and dependencies
    - Highlight any potential conflicts or concerns (e.g., a key_file was recently modified, a pattern has been deprecated)
    - List all helper modules, utilities, and shared functions that should be reused rather than reimplemented
+   - If the task provides a `technical_details` object, fold its recorded context (data shapes, gotchas, key decisions, reference links) into your summary so the implementation step benefits from it. It is optional free-form context, not a scored field — if it is empty (`{}`) or absent, simply skip it.
    - Keep the summary concise and actionable — focus on what the implementation step needs to know
 
 ## Output: the `explorer_result` field
