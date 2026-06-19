@@ -158,6 +158,8 @@ stride-enriching-tasks           ← WHEN a task has empty key_files/testing_str
 | `stride-enriching-tasks` | Task has empty `key_files` / `testing_strategy` | Transform minimal specs into complete tasks |
 | `stride-subagent-workflow` | After claiming, before implementation | Decision matrix for exploration and review |
 
+The `stride-creating-tasks`, `stride-enriching-tasks`, and `stride-workflow` skills also document the optional `technical_details` task field — a free-form JSON object (no fixed keys) for any extra technical context (data shapes, gotchas, decisions, links). It is optional everywhere and is **not** one of the five review_queue-scored fields, so a blank value is never a scoring gap.
+
 ## Subagent Support (Dual-Path)
 
 Pi does not ship with native subagent dispatch. stride-pi provides two paths; both are shipped:

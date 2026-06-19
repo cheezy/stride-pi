@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-19
+
+Documentation parity release: brings the Pi variant to canonical stride **v1.29.0 (G225)**, porting the `technical_details` task-field documentation rollout into the Pi skills. Feature minor (1.6.0 → 1.7.0). stride-pi is not distributed through a marketplace, so there is no marketplace pin to update.
+
+### Added — the `technical_details` task field is now documented across the plugin
+
+`technical_details` is an **optional, free-form JSON object** a task may carry to hold any additional technical context that does not fit the structured fields — data shapes, gotchas, key decisions, reference links. Unlike `testing_strategy`, it has **no fixed keys**: a task author or enricher uses whatever keys best describe the work, and leaves it as `{}` when there is nothing substantive to record. It is **not** one of the five review_queue-scored fields (`acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow`), so a blank value is never a scoring gap. The plugin previously had no documentation for this field; agents now have one consistent definition to follow.
+
+- **`skills/stride-creating-tasks/SKILL.md`** (W1203) — documents `technical_details` in the Field Quick Reference table, the complete-task example, and the Embedded Object Formats section (as a free-form object, explicitly contrasted with `testing_strategy`, which has fixed `valid_keys`).
+- **`skills/stride-creating-goals/SKILL.md`** (W1203) — notes that nested tasks MAY carry an optional free-form `technical_details` object and that it is not a review_queue-scored field.
+- **`skills/stride-enriching-tasks/SKILL.md`** (W1204) — adds `technical_details` to the enrichment guidance as an optional field the enricher MAY populate from discovered context — never fabricated, left as `{}` otherwise — with a no-secrets reminder since the object is free-form. (Pi folds enrichment into the skill; there is no separate task-enricher agent.)
+- **`skills/stride-task-decomposer/SKILL.md`** (W1204) — notes that a decomposed task MAY include an optional `technical_details` object.
+- **`skills/stride-workflow/SKILL.md`** (W1205) — adds `technical_details` to the Step 1 task-field review list (optional free-form context; not a scored field).
+- **`skills/stride-task-explorer/SKILL.md`** (W1205) — the explorer folds any recorded `technical_details` into its summary so implementation benefits from it.
+
+### Backward compatibility
+
+Documentation-only. No hook-bridge (TypeScript), wire-shape, `.stride.md`, or `.stride_auth.md` changes; `technical_details` is optional everywhere it appears and is never added to any scored-field set. Tasks that omit it behave exactly as before.
+
+### Source
+
+Goal G248 — the Pi port of canonical stride v1.29.0 (G225 / G243, W1179–W1182), across child tasks W1203 (creation contracts), W1204 (enrichment + decomposition), W1205 (workflow + exploration surfacing), and W1206 (this release-notes/version task). stride-pi is not distributed through a marketplace, so no marketplace pin update.
+
 ## [1.6.0] - 2026-06-14
 
 Parity release: brings the Pi variant up to canonical stride **v1.24.0–v1.28.0** (goal G233). Covers the diff-upload survival + state self-heal work, the hook-state-artifact exclusion, the `commands_output` success shape, the unconditional claim-time base-ref refresh, and the G222/D66 reviewer-contract tightening across the skills and both lockstep reviewer-prompt copies. Feature minor (1.5.0 → 1.6.0).
