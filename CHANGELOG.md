@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-06-29
+
+### Added — `create-tasks`/`create-goals` now have an explicit terminal state, plus a Backlog claim-fail guard (G284 / W1405)
+
+In an autonomous/build context the create-tasks/create-goals request could create a task and then fall straight through the `stride-workflow` orchestrator's build loop — auto-claiming and building the just-created task. The claim fails because newly created tasks sit in the Backlog (not Ready), and the agent would then build the work outside the Stride lifecycle (no claim, no hooks, no completion record). The orchestrator had no terminal state for creation, unlike `stride-ideation` which stops at the written document.
+
+- **`skills/stride-workflow/SKILL.md`** — Added top-level **Creation Terminal State** and **Backlog Claim-Fail Guard** sections before Step 0 (pi has no Context-Informed Creation section or activation marker — no-marker variant). On a create-tasks/create-goals request the orchestrator now reports the created identifiers and STOPS without entering Task Discovery, claiming, or implementation; a failed claim is a terminal stop, never a fallback to building outside the lifecycle. The build loop (Steps 1–9) is unchanged.
+- **`skills/stride-creating-tasks/SKILL.md`**, **`skills/stride-creating-goals/SKILL.md`** — Added a `## Terminal state` note: creation ends the turn; building is a separate, explicitly-invoked action.
+
+Documentation-only: no wire-shape, hook, or auth change. stride-pi is not distributed through a marketplace, so there is no marketplace pin to update.
+
 ## [1.8.0] - 2026-06-20
 
 Documentation parity release: brings the Pi variant to canonical stride **v1.30.0 (G254)**, porting the `created_by_agent` creation-skill documentation into the Pi skills. Feature minor (1.7.0 → 1.8.0). stride-pi is not distributed through a marketplace, so there is no marketplace pin to update.
