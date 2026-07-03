@@ -1,6 +1,6 @@
 ---
 name: stride-hook-diagnostician
-description: Use this skill when a Stride hook (before_doing, after_doing, before_review, after_review) fails during task lifecycle. Parse the hook output, identify failure patterns, categorize issues by severity, and produce a prioritized fix plan. This is Pi's inline equivalent of the hook-diagnostician subagent in sibling plugins (Claude Code / Codex CLI).
+description: Use this skill when a Stride hook (before_doing, after_doing, before_review, after_review, after_goal) fails during task or goal lifecycle. Parse the hook output, identify failure patterns, categorize issues by severity, and produce a prioritized fix plan. This is Pi's inline equivalent of the hook-diagnostician subagent in sibling plugins (Claude Code / Codex CLI).
 ---
 
 # Stride: Hook Diagnostician (Inline)
@@ -13,12 +13,13 @@ Analyze hook failure output, identify root causes, and produce a prioritized fix
 
 ## When to invoke
 
-**MANDATORY** whenever a blocking Stride hook fails (non-zero exit code) — use this skill to prioritize the fix order before making blind attempts. The hooks are:
+**MANDATORY** whenever a blocking Stride hook fails (non-zero exit code) — use this skill to prioritize the fix order before making blind attempts. The five hooks are:
 
 - `before_doing` — runs before claiming work (pull code, setup)
 - `after_doing` — runs before marking complete (tests, lint, build)
 - `before_review` — runs before moving to review (create PR, docs)
 - `after_review` — runs after approval (merge, deploy)
+- `after_goal` — runs after the parent goal's final child task completes (project rollups, goal-completion notifications); its result is forwarded to `PATCH /api/tasks/:goal_id/after_goal`
 
 `after_doing` and `before_review` are the most common failure points because they batch many quality gates.
 
@@ -26,7 +27,7 @@ Analyze hook failure output, identify root causes, and produce a prioritized fix
 
 When invoked after a failed hook, you must have these pieces of information in scope (from the hook execution you just ran), and you may receive them in one of three shapes — see "Input Detection and Parsing" below:
 
-- `hook_name` — which of the four hooks failed
+- `hook_name` — which of the five hooks failed
 - `exit_code` — the non-zero exit code
 - `output` (or `stdout`/`stderr`) — output from the failed command(s)
 - `duration_ms` — how long the hook ran before failing
@@ -293,13 +294,45 @@ Description: Merge conflict during git pull
 Suggested fix: Resolve conflicts in listed files. Open each file, find <<<< markers, choose correct version, then git add and continue.
 ```
 
+### 7. after_goal Hook & Goal-Forwarding Failures (Priority: HIGH — unblocks the parent goal)
+
+`after_goal` is the fifth blocking hook (60,000 ms budget, matching `HOOK_TIMEOUTS_MS`). It fires once, after the parent goal's final child task completes, when the server bundles an `after_goal` entry in the `/complete` or `/mark_reviewed` response. It has two distinct failure modes.
+
+**Mode A — the `## after_goal` command failed.** The hook-bridge runs the section and emits the same structured result shape on stdout as the other hooks:
+
+```json
+{
+  "hook": "after_goal",
+  "status": "failed",
+  "exit_code": 1,
+  "output": "... merged stdout + stderr ...",
+  "failed_command": "./scripts/notify-team.sh",
+  "duration_ms": 1234
+}
+```
+
+Diagnose `output` with the Failure Pattern Catalog above exactly as for any other hook (git, script, network, etc.); the failing command's own category sets the fix priority. The parent goal stays In Progress until the fix lands and the result is re-forwarded.
+
+**Mode B — the PATCH forwarding failed.** After the command runs, the agent PATCHes the captured result to `PATCH /api/tasks/:goal_id/after_goal` to flip the goal to Done. If that PATCH never lands (transport failure, non-2xx, missing `GOAL_ID`), the goal does NOT transition immediately — it falls back to the server's grace-window worker, which promotes it to Done automatically after the configured wait. Detection: an `after_goal` that succeeded locally (`exit_code: 0`) yet whose goal is still In Progress, or a PATCH error in the agent's log.
+
+**Structured output:**
+```
+Category: after_goal Failure
+Severity: High
+Hook: after_goal
+Description: <Mode A: the after_goal command failed | Mode B: the /api/tasks/:goal_id/after_goal forwarding did not land>
+Suggested fix:
+  - Mode A: fix the failing command per its catalog category, then re-run so the result re-forwards.
+  - Mode B: usually no code fix — the grace-window worker promotes the goal after its wait; investigate only if the goal stays In Progress past that window (check GOAL_ID and connectivity to the API).
+```
+
 ## Hook Timeout Handling
 
 **Detection:** Duration ≥ timeout threshold AND output may be empty or truncated (the Pi hook-bridge reports timeouts with `exit_code: 124` and an output suffix `hook command timed out after <ms> ms`).
 
 **Timeout thresholds:**
-- The Pi hook-bridge (`extensions/hook-bridge/index.ts`) wraps each hook in a single `HOOK_TIMEOUT_MS = 120,000 ms` deadline and kills the child with SIGTERM (then SIGKILL after a 5,000 ms grace).
-- Cross-plugin / server-supplied per-hook reference thresholds: before_doing 60,000 ms · after_doing 120,000 ms · before_review 60,000 ms · after_review 60,000 ms.
+- The Pi hook-bridge (`extensions/hook-bridge/index.ts`) wraps each hook in a per-hook deadline from the `HOOK_TIMEOUTS_MS` map and kills the child with SIGTERM (then SIGKILL after a 5,000 ms grace).
+- Per-hook deadlines: before_doing 60,000 ms · after_doing 300,000 ms · before_review 60,000 ms · after_review 60,000 ms · after_goal 60,000 ms. (after_doing gets the largest window because it runs the full quality-gate suite.)
 
 **When timeout detected:**
 ```

@@ -1,6 +1,6 @@
 ---
 name: stride-hook-diagnostician
-description: Analyze Stride hook failure output, identify root causes, and return a prioritized fix plan. Does not fix code — only diagnoses.
+description: Analyze Stride hook failure output (across all five lifecycle hooks — before_doing, after_doing, before_review, after_review, after_goal), identify root causes, and return a prioritized fix plan. Does not fix code — only diagnoses.
 tools: read, grep, find, ls
 ---
 
@@ -265,6 +265,38 @@ Severity: Critical
 Files: lib/kanban/tasks.ex
 Description: Merge conflict during git pull
 Suggested fix: Resolve conflicts in listed files. Open each file, find <<<< markers, choose correct version, then git add and continue.
+```
+
+### 7. after_goal Hook & Goal-Forwarding Failures (Priority: HIGH — unblocks the parent goal)
+
+`after_goal` is the fifth blocking hook (60,000 ms budget, matching `HOOK_TIMEOUTS_MS`). It fires once, after the parent goal's final child task completes, when the server bundles an `after_goal` entry in the `/complete` or `/mark_reviewed` response. It has two distinct failure modes.
+
+**Mode A — the `## after_goal` command failed.** The hook-bridge runs the section and emits the same structured result shape on stdout as the other hooks:
+
+```json
+{
+  "hook": "after_goal",
+  "status": "failed",
+  "exit_code": 1,
+  "output": "... merged stdout + stderr ...",
+  "failed_command": "./scripts/notify-team.sh",
+  "duration_ms": 1234
+}
+```
+
+Diagnose `output` with the Failure Pattern Catalog above exactly as for any other hook (git, script, network, etc.); the failing command's own category sets the fix priority. The parent goal stays In Progress until the fix lands and the result is re-forwarded.
+
+**Mode B — the PATCH forwarding failed.** After the command runs, the agent PATCHes the captured result to `PATCH /api/tasks/:goal_id/after_goal` to flip the goal to Done. If that PATCH never lands (transport failure, non-2xx, missing `GOAL_ID`), the goal does NOT transition immediately — it falls back to the server's grace-window worker, which promotes it to Done automatically after the configured wait. Detection: an `after_goal` that succeeded locally (`exit_code: 0`) yet whose goal is still In Progress, or a PATCH error in the agent's log.
+
+**Structured output:**
+```
+Category: after_goal Failure
+Severity: High
+Hook: after_goal
+Description: <Mode A: the after_goal command failed | Mode B: the /api/tasks/:goal_id/after_goal forwarding did not land>
+Suggested fix:
+  - Mode A: fix the failing command per its catalog category, then re-run so the result re-forwards.
+  - Mode B: usually no code fix — the grace-window worker promotes the goal after its wait; investigate only if the goal stays In Progress past that window (check GOAL_ID and connectivity to the API).
 ```
 
 ## Hook Timeout Handling
