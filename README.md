@@ -199,15 +199,9 @@ Whichever path you used, you genuinely performed the work. Use the **dispatched 
 
 ## Hook Execution
 
-**Pi has no automatic hook interception.** The agent must execute `.stride.md` hooks directly.
+**With the `stride-pi-hook-bridge` extension installed (the default `install.sh`), all five hooks fire automatically.** The extension intercepts the relevant `tool_call` / `tool_result` events, reads the matching `.stride.md` section, runs its commands, and — for `after_doing` — vetoes `/complete` if the quality gate fails. Because the extension has already executed the real commands, the agent supplies **placeholder** hook results in the API call. This is the norm, and it matches the Setup section, the Subagent (Dual-Path) section, the hook-state paragraphs below, `AGENTS.md`, and the shipped `extensions/hook-bridge/index.ts`.
 
-### How Hooks Work in Pi
-
-1. The skill instructs the agent which `.stride.md` section to execute
-2. The agent reads the `## section_name` from `.stride.md`
-3. The agent extracts commands from the ` ```bash ` code block
-4. The agent executes each command **one at a time** via Pi's `bash` tool
-5. If any command fails, the agent stops and fixes the issue before proceeding
+Without the extension (`--no-extensions`), the agent executes `.stride.md` hooks directly — see [Fallback: manual execution](#fallback-manual-execution) below.
 
 ### Hook Lifecycle
 
@@ -217,8 +211,9 @@ Whichever path you used, you genuinely performed the work. Use the **dispatched 
 | `after_doing` | Before marking complete | Yes | 300s |
 | `before_review` | After marking complete | Yes | 60s |
 | `after_review` | After review approval | Yes | 60s |
+| `after_goal` | After the parent goal's final child task completes | Yes | 60s |
 
-**Blocking hooks** prevent the next step if any command fails. The agent must fix the issue and re-run the hook before proceeding.
+All five timeouts match `HOOK_TIMEOUTS_MS` in `extensions/hook-bridge/index.ts` (`after_doing` 300s; the other four 60s). **Blocking hooks** prevent the next step if any command fails. Under the default extension the veto is automatic; in the manual fallback the agent must fix the issue and re-run the hook before proceeding.
 
 **Time budget:** `after_doing` gets the largest window (300s) because it runs the full quality-gate suite (tests, lint, build). The other hooks are quick pre/post actions and keep a tight 60s budget. The changed-files diff snapshot is captured and uploaded *before* the `after_doing` gate runs — and refreshed after it — so the diff survives even if a long-running gate exhausts the budget. If the upload still does not land, the `before_review` hook self-heals by re-attempting it on its own fresh budget.
 
@@ -226,12 +221,24 @@ Whichever path you used, you genuinely performed the work. Use the **dispatched 
 
 **Claim-time base-ref refresh:** a claim always opens a new task window, so on **every** detected claim curl the bridge refreshes `TASK_BASE_REF` in `.stride-env-cache` to the current `git rev-parse HEAD` and clears the two state files — even when the claim response cannot be parsed into task fields (in which case the existing `TASK_` identity lines are preserved and only the base ref is refreshed). This prevents a base ref recorded under a prior claim from surviving and making the `after_doing` diff span every commit since that older claim. The refresh is skipped silently when HEAD is unresolvable (e.g. a non-git directory). Note: the canonical shell hook's persisted-output `jq` fallback is **N/A for pi** — pi derives the base ref from local git (`git rev-parse HEAD`), not from the claim response JSON, so there is no oversized-response truncation path to recover from.
 
-### Hook Execution Rules
+### Fallback: manual execution
+
+When you install with `--no-extensions` (or run on a Pi version that can't load the extension), no automatic interception happens and the agent must execute `.stride.md` hooks directly:
+
+1. The skill instructs the agent which `.stride.md` section to execute
+2. The agent reads the `## section_name` from `.stride.md`
+3. The agent extracts commands from the ` ```bash ` code block
+4. The agent executes each command **one at a time** via Pi's `bash` tool
+5. If any command fails, the agent stops and fixes the issue before proceeding
+
+For `## after_goal` specifically, the agent additionally POSTs the captured `{exit_code, output, duration_ms}` to `PATCH /api/tasks/:goal_id/after_goal` to flip the parent goal to Done. A missing `## after_goal` section is a clean no-op — the server's grace-window worker promotes the goal automatically.
+
+**Manual hook rules:**
 
 - Execute each command **one at a time** — do not combine into a single script
 - **Never prompt for permission** — hooks are pre-authorized by the user who authored them
 - Capture exit codes — a non-zero exit code means the hook failed
-- Include the hook result in the API call (`before_doing_result`, `after_doing_result`, `before_review_result`)
+- Include the **real** hook result in the API call (`before_doing_result`, `after_doing_result`, `before_review_result`). Under the default extension you instead supply **placeholder** results — the extension runs the commands and reports the real outcome itself.
 
 ## Completion Validation (G65)
 
