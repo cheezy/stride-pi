@@ -8,18 +8,22 @@ import * as path from "node:path";
 import {
   BIN_PLACEHOLDER,
   CHANGED_FILES_SNAPSHOT_FILE,
+  CLAIM_DIRTY_BASELINE_FILE,
   DIFF_UPLOAD_STATE_FILE,
   MAX_LINES,
   TRUNC_MARKER,
   captureChangedFiles,
+  captureClaimDirtyBaseline,
   extractApiBase,
   extractToken,
   finalizeAfterDoing,
   putChangedFiles,
+  readClaimDirtyBaseline,
   readDiffUploadState,
   readFinalizerEnv,
   recordDiffUploadState,
   selfHealChangedFilesUpload,
+  writeClaimDirtyBaseline,
 } from "./changed-files.ts";
 
 function gitInit(cwd: string): void {
@@ -1113,6 +1117,217 @@ describe("captureChangedFiles excludes the hook's own state artifacts (D67)", ()
       fs.writeFileSync(path.join(dir, CHANGED_FILES_SNAPSHOT_FILE), "[]");
 
       assert.deepEqual(captureChangedFiles(base, dir), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("captureChangedFiles subtracts the claim-time dirty baseline (W1529)", () => {
+  // Simulates the before_doing handler: capture the claim-time dirty set and
+  // persist it exactly as index.ts does, then let the task make its edits.
+  function simulateClaim(dir: string): void {
+    writeClaimDirtyBaseline(dir, captureClaimDirtyBaseline(dir));
+  }
+
+  it("excludes a tracked file dirty before the claim and untouched during the task", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "pre.txt"), "committed\n");
+      const base = gitCommit(dir, "base");
+
+      // Pre-claim working-tree edits: a tracked modification + an untracked file.
+      fs.writeFileSync(path.join(dir, "pre.txt"), "pre-claim-edit\n");
+      fs.writeFileSync(path.join(dir, "untracked-pre.txt"), "untracked pre-claim\n");
+      simulateClaim(dir);
+
+      // The task touches neither → both must be subtracted from the snapshot.
+      assert.deepEqual(captureChangedFiles(base, dir), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still captures a file dirty before the claim AND further edited during the task (full delta)", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "f.txt"), "v1\n");
+      const base = gitCommit(dir, "base");
+
+      fs.writeFileSync(path.join(dir, "f.txt"), "v2-preclaim\n"); // dirty at claim
+      simulateClaim(dir);
+
+      fs.writeFileSync(path.join(dir, "f.txt"), "v3-task\n"); // task edits it further
+
+      const entry = captureChangedFiles(base, dir).find((r) => r.path === "f.txt");
+      assert.ok(entry, "further-edited pre-claim file must still be captured");
+      assert.match(entry!.diff, /\+v3-task/, "diff is the full claim->completion delta");
+      assert.match(entry!.diff, /-v1/);
+      assert.doesNotMatch(entry!.diff, /v2-preclaim/, "the intermediate pre-claim state is not a diff line");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("captures a file clean at claim time and edited during the task", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "f.txt"), "v1\n");
+      const base = gitCommit(dir, "base");
+
+      simulateClaim(dir); // clean tree → empty baseline
+
+      fs.writeFileSync(path.join(dir, "f.txt"), "v2-task\n");
+
+      const entry = captureChangedFiles(base, dir).find((r) => r.path === "f.txt");
+      assert.ok(entry);
+      assert.match(entry!.diff, /\+v2-task/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("subtracts only the pre-claim-dirty file and keeps a separately task-edited file", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "keep.txt"), "k1\n");
+      fs.writeFileSync(path.join(dir, "dirty.txt"), "d1\n");
+      const base = gitCommit(dir, "base");
+
+      fs.writeFileSync(path.join(dir, "dirty.txt"), "d2-preclaim\n"); // pre-claim only
+      simulateClaim(dir);
+
+      fs.writeFileSync(path.join(dir, "keep.txt"), "k2-task\n"); // task edits this one
+
+      const paths = captureChangedFiles(base, dir).map((r) => r.path).sort();
+      assert.deepEqual(paths, ["keep.txt"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("captures everything when no baseline artifact exists (fail-open, prior behavior)", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "f.txt"), "v1\n");
+      const base = gitCommit(dir, "base");
+      // A pre-claim edit, but the claim baseline was never written.
+      fs.writeFileSync(path.join(dir, "f.txt"), "v2\n");
+
+      const entry = captureChangedFiles(base, dir).find((r) => r.path === "f.txt");
+      assert.ok(entry, "absent baseline must preserve capture-everything behavior");
+      assert.match(entry!.diff, /\+v2/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes the .stride-claim-dirty.json artifact itself from the snapshot", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "seed.txt"), "seed\n");
+      const base = gitCommit(dir, "seed");
+      fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+      // An empty baseline → no subtraction, but the artifact must not surface.
+      writeClaimDirtyBaseline(dir, {});
+
+      const paths = captureChangedFiles(base, dir).map((r) => r.path).sort();
+      assert.deepEqual(paths, ["a.txt"]);
+      assert.ok(!paths.includes(CLAIM_DIRTY_BASELINE_FILE));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still returns [] when git is absent (fail-soft preserved)", () => {
+    const originalPath = process.env.PATH;
+    const dir = mktemp();
+    try {
+      process.env.PATH = "/nonexistent-stride-pi-test-path";
+      assert.deepEqual(captureClaimDirtyBaseline(dir), {});
+      assert.deepEqual(captureChangedFiles("HEAD", dir), []);
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("captureClaimDirtyBaseline / read-write round-trip (W1529)", () => {
+  it("maps each dirty path to its working-tree blob SHA and round-trips through disk", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "tracked.txt"), "v1\n");
+      gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "tracked.txt"), "v2\n"); // tracked-modified
+      fs.writeFileSync(path.join(dir, "new.txt"), "brand new\n"); // untracked
+
+      const baseline = captureClaimDirtyBaseline(dir);
+      assert.ok(baseline["tracked.txt"], "tracked-modified path recorded");
+      assert.ok(baseline["new.txt"], "untracked path recorded");
+      // The recorded value is the git blob SHA of the working-tree content.
+      assert.match(baseline["tracked.txt"], /^[0-9a-f]{40}$/);
+
+      writeClaimDirtyBaseline(dir, baseline);
+      assert.deepEqual(readClaimDirtyBaseline(dir), baseline);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns {} for a clean working tree", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "f.txt"), "v1\n");
+      gitCommit(dir, "base");
+      assert.deepEqual(captureClaimDirtyBaseline(dir), {});
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns {} for a non-git directory (fail-open)", () => {
+    const dir = mktemp();
+    try {
+      assert.deepEqual(captureClaimDirtyBaseline(dir), {});
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("readClaimDirtyBaseline degrades to {} for missing, malformed, or non-object JSON", () => {
+    const dir = mktemp();
+    try {
+      assert.deepEqual(readClaimDirtyBaseline(dir), {}); // missing
+      fs.writeFileSync(path.join(dir, CLAIM_DIRTY_BASELINE_FILE), "not json{");
+      assert.deepEqual(readClaimDirtyBaseline(dir), {}); // malformed
+      fs.writeFileSync(path.join(dir, CLAIM_DIRTY_BASELINE_FILE), "[]");
+      assert.deepEqual(readClaimDirtyBaseline(dir), {}); // array, not a map
+      fs.writeFileSync(path.join(dir, CLAIM_DIRTY_BASELINE_FILE), '{"a.txt":123,"b.txt":"hash"}');
+      assert.deepEqual(readClaimDirtyBaseline(dir), { "b.txt": "hash" }); // drops non-string values
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes the baseline file with 0600 permissions and no credentials", () => {
+    const dir = mktemp();
+    try {
+      writeClaimDirtyBaseline(dir, { "lib/foo.ex": "abc123" });
+      const file = path.join(dir, CLAIM_DIRTY_BASELINE_FILE);
+      const contents = fs.readFileSync(file, "utf-8");
+      assert.ok(!contents.includes("Bearer"), "no token in the baseline file");
+      assert.ok(!contents.includes("http"), "no URL in the baseline file");
+      const mode = fs.statSync(file).mode & 0o777;
+      assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

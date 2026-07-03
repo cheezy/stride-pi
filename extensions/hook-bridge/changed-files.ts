@@ -81,6 +81,19 @@ function hasGit(): boolean {
   }
 }
 
+/**
+ * Hash a working-tree file's current content (its git blob SHA). Returns
+ * undefined on any failure (missing/deleted file, git error) so callers fail
+ * OPEN — an un-hashable path is treated as "changed" and kept, never wrongly
+ * dropped from the snapshot.
+ */
+function hashWorkingTreeFile(file: string, cwd: string): string | undefined {
+  const res = runGit(["hash-object", "--", file], cwd);
+  if (!res.ok) return undefined;
+  const hash = res.stdout.trim();
+  return hash.length > 0 ? hash : undefined;
+}
+
 function resolveBase(baseRef: string, cwd: string): string | null {
   if (baseRef) {
     if (runGit(["rev-parse", "--verify", baseRef], cwd).ok) return baseRef;
@@ -142,6 +155,7 @@ export function captureChangedFiles(baseRef: string, cwd: string): ChangedFile[]
   const HOOK_STATE_ARTIFACTS = new Set([
     DIFF_UPLOAD_STATE_FILE,
     CHANGED_FILES_SNAPSHOT_FILE,
+    CLAIM_DIRTY_BASELINE_FILE,
   ]);
 
   const seen = new Set<string>();
@@ -156,13 +170,35 @@ export function captureChangedFiles(baseRef: string, cwd: string): ChangedFile[]
 
   if (allFiles.length === 0) return [];
 
+  // W1529: subtract files that were already dirty at claim time and remain
+  // byte-identical now — the task never touched them, so they are not part of
+  // the claim->completion delta and must not pollute the reviewer's diff. A file
+  // dirty at claim AND further edited during the task (its working-tree blob SHA
+  // differs from the claim-time SHA) stays, with its full diff against the base.
+  // Fail-open: an empty baseline (git missing, first run, or a read failure) or
+  // an un-hashable path keeps the file, preserving the prior capture-everything
+  // behavior.
+  const claimDirtyBaseline = readClaimDirtyBaseline(cwd);
+  const files =
+    Object.keys(claimDirtyBaseline).length === 0
+      ? allFiles
+      : allFiles.filter((file) => {
+          const claimHash = claimDirtyBaseline[file];
+          if (claimHash === undefined) return true; // clean at claim → keep
+          const currentHash = hashWorkingTreeFile(file, cwd);
+          if (currentHash === undefined) return true; // un-hashable → fail-open keep
+          return currentHash !== claimHash; // keep only if changed since claim
+        });
+
+  if (files.length === 0) return [];
+
   const numstatResult = runGit(["diff", "--numstat", base], cwd);
   const trackedBinaries = numstatResult.ok
     ? parseNumstatBinaries(numstatResult.stdout)
     : new Set<string>();
 
   const results: ChangedFile[] = [];
-  for (const file of allFiles) {
+  for (const file of files) {
     let isBinary = false;
     let diffText = "";
 
@@ -254,6 +290,89 @@ export async function putChangedFiles(
 
 export const CHANGED_FILES_SNAPSHOT_FILE = ".stride-changed-files.json";
 export const DIFF_UPLOAD_STATE_FILE = ".stride-diff-upload-state";
+export const CLAIM_DIRTY_BASELINE_FILE = ".stride-claim-dirty.json";
+
+/**
+ * Capture the set of files already dirty relative to HEAD at claim time, mapping
+ * each repo-root-relative path to its current working-tree blob SHA. Enumerates
+ * the same two nets captureChangedFiles uses (tracked diff vs HEAD + untracked,
+ * excluding gitignored paths). captureChangedFiles later subtracts any of these
+ * paths whose content is unchanged at completion, so pre-claim edits the task
+ * never touched do not pollute the after_doing snapshot.
+ *
+ * Best-effort and FAIL-OPEN (W1529 pitfall): git missing, not a repo, or any
+ * enumeration/hash failure yields an empty map, which makes captureChangedFiles
+ * fall back to its prior capture-everything behavior. A path that cannot be
+ * hashed is simply omitted from the baseline (its later changes are captured
+ * rather than dropped).
+ */
+export function captureClaimDirtyBaseline(cwd: string): Record<string, string> {
+  const baseline: Record<string, string> = {};
+  if (!hasGit()) return baseline;
+
+  const tracked = runGit(["diff", "--name-only", "HEAD"], cwd);
+  const untracked = runGit(["ls-files", "--others", "--exclude-standard"], cwd);
+
+  const paths = new Set<string>();
+  if (tracked.ok) {
+    for (const p of tracked.stdout.split("\n")) if (p.length > 0) paths.add(p);
+  }
+  if (untracked.ok) {
+    for (const p of untracked.stdout.split("\n")) if (p.length > 0) paths.add(p);
+  }
+
+  for (const p of paths) {
+    const hash = hashWorkingTreeFile(p, cwd);
+    if (hash !== undefined) baseline[p] = hash;
+  }
+  return baseline;
+}
+
+/**
+ * Persist the claim-time dirty baseline to `.stride-claim-dirty.json`.
+ * Best-effort (never throws) and mode 0o600 like the other state artifacts — it
+ * holds ONLY repo-root-relative paths and blob SHAs, never the API URL or bearer
+ * token. Gitignore this file alongside the other `.stride-*` state artifacts.
+ */
+export function writeClaimDirtyBaseline(
+  cwd: string,
+  baseline: Record<string, string>,
+): void {
+  try {
+    fs.writeFileSync(
+      path.join(cwd, CLAIM_DIRTY_BASELINE_FILE),
+      JSON.stringify(baseline),
+      { encoding: "utf-8", mode: 0o600 },
+    );
+  } catch {
+    // best-effort; not fatal
+  }
+}
+
+/**
+ * Read `.stride-claim-dirty.json`, returning the path→blob-SHA baseline map. A
+ * missing, unreadable, or malformed file (or any non-object JSON) degrades to an
+ * empty map — which makes captureChangedFiles capture everything. Never throws.
+ */
+export function readClaimDirtyBaseline(cwd: string): Record<string, string> {
+  const file = path.join(cwd, CLAIM_DIRTY_BASELINE_FILE);
+  if (!fs.existsSync(file)) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return {};
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
 
 /**
  * Persist the captured snapshot to `.stride-changed-files.json`. Best-effort:

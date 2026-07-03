@@ -37,8 +37,11 @@ import {
   finalizeAfterDoing,
   selfHealChangedFilesUpload,
   readFinalizerEnv,
+  captureClaimDirtyBaseline,
+  writeClaimDirtyBaseline,
   CHANGED_FILES_SNAPSHOT_FILE,
   DIFF_UPLOAD_STATE_FILE,
+  CLAIM_DIRTY_BASELINE_FILE,
 } from "./changed-files.js";
 import {
   responseHasAfterGoal,
@@ -132,10 +135,14 @@ export default function (pi: ExtensionAPI): void {
       const baseRef = captureBaseRef(ctx.cwd);
       const resolved = resolveClaimEnvCache(taskEnv, baseRef, loadEnvCache(ctx.cwd));
       if (resolved) writeEnvCache(ctx.cwd, resolved);
-      // Clear any leftover snapshot/upload-state from a prior task so a stale
-      // 2xx cannot suppress the new task's before_review self-heal. Runs on the
-      // claim regardless of whether task env parsed.
+      // Clear any leftover snapshot/upload-state/claim-dirty-baseline from a
+      // prior task so a stale 2xx cannot suppress the new task's before_review
+      // self-heal. Runs on the claim regardless of whether task env parsed.
       deleteDiffArtifacts(ctx.cwd);
+      // W1529: record which files are already dirty at claim time (path -> blob
+      // SHA) so the after_doing snapshot can subtract pre-claim edits the task
+      // never touched. Written AFTER deleteDiffArtifacts clears the prior one.
+      writeClaimDirtyBaseline(ctx.cwd, captureClaimDirtyBaseline(ctx.cwd));
     }
 
     // before_review self-heal: if the after_doing finalize never landed the
@@ -405,7 +412,11 @@ function deleteEnvCache(cwd: string): void {
  * the rm cleanup in stride-hook.sh's claim and after_review paths. Best-effort.
  */
 function deleteDiffArtifacts(cwd: string): void {
-  for (const name of [CHANGED_FILES_SNAPSHOT_FILE, DIFF_UPLOAD_STATE_FILE]) {
+  for (const name of [
+    CHANGED_FILES_SNAPSHOT_FILE,
+    DIFF_UPLOAD_STATE_FILE,
+    CLAIM_DIRTY_BASELINE_FILE,
+  ]) {
     try {
       fs.rmSync(path.join(cwd, name), { force: true });
     } catch {
