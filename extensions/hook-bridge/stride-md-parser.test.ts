@@ -68,3 +68,99 @@ describe("parseHookSection", () => {
     assert.deepEqual(parseHookSection(SAMPLE, "Before_Doing"), []);
   });
 });
+
+const CONT = `## two_line
+
+\`\`\`bash
+curl -sS -X POST \\
+  https://example.com/api
+\`\`\`
+
+## three_line
+
+\`\`\`bash
+curl -sS \\
+  -H "Content-Type: application/json" \\
+  https://example.com/api
+\`\`\`
+
+## graceful_tail
+
+\`\`\`bash
+echo hi \\
+\`\`\`
+
+## mid_and_escaped
+
+\`\`\`bash
+echo foo\\bar
+echo done\\\\
+\`\`\`
+
+## mixed_filter
+
+\`\`\`bash
+# a comment
+echo first
+
+echo part-a \\
+  part-b
+\`\`\`
+
+## comment_backslash
+
+\`\`\`bash
+# TODO fix this \\
+mix test
+\`\`\`
+`;
+
+// Fence deliberately left unclosed, ending mid-continuation at EOF.
+const UNTERMINATED = `## hook
+
+\`\`\`bash
+echo dangling \\`;
+
+describe("parseHookSection — backslash line continuation", () => {
+  it("joins a two-line continued command into one", () => {
+    assert.deepEqual(parseHookSection(CONT, "two_line"), [
+      "curl -sS -X POST https://example.com/api",
+    ]);
+  });
+
+  it("joins a three-line continued command into one", () => {
+    assert.deepEqual(parseHookSection(CONT, "three_line"), [
+      'curl -sS -H "Content-Type: application/json" https://example.com/api',
+    ]);
+  });
+
+  it("degrades gracefully when the fence's final line has a trailing backslash", () => {
+    // No continuation line follows; the buffered command is emitted with the
+    // backslash stripped — no crash, no dangling backslash artifact.
+    assert.deepEqual(parseHookSection(CONT, "graceful_tail"), ["echo hi"]);
+  });
+
+  it("leaves a mid-line backslash intact and does not continue on an escaped trailing backslash", () => {
+    assert.deepEqual(parseHookSection(CONT, "mid_and_escaped"), [
+      "echo foo\\bar",
+      "echo done\\\\",
+    ]);
+  });
+
+  it("still filters comment and blank lines when a continuation is present", () => {
+    assert.deepEqual(parseHookSection(CONT, "mixed_filter"), [
+      "echo first",
+      "echo part-a part-b",
+    ]);
+  });
+
+  it("does not let a comment's trailing backslash swallow the next command", () => {
+    // A '#' comment ending in a backslash is a literal comment in bash — the
+    // following command must survive, not be folded into the comment.
+    assert.deepEqual(parseHookSection(CONT, "comment_backslash"), ["mix test"]);
+  });
+
+  it("flushes a dangling continuation when the fence is never closed (EOF)", () => {
+    assert.deepEqual(parseHookSection(UNTERMINATED, "hook"), ["echo dangling"]);
+  });
+});
