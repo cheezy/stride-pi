@@ -8,6 +8,12 @@
  *   post + /api/tasks/claim              -> before_doing  (non-blocking)
  *   post + /api/tasks/:id/complete       -> before_review (non-blocking)
  *   post + /api/tasks/:id/mark_reviewed  -> after_review  (non-blocking)
+ *
+ * The fifth hook, after_goal, is NOT routed from a URL here — detectStrideHook
+ * never returns it. It is response-payload-driven: after-goal-detector.ts fires
+ * it when the /complete or /mark_reviewed response bundles an after_goal entry.
+ * StrideHookName still includes after_goal because HOOK_TIMEOUTS_MS and the
+ * runner key on the full five-hook set.
  */
 
 export type StrideHookPhase = "pre" | "post";

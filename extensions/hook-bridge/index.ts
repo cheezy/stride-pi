@@ -1,19 +1,24 @@
 /**
  * stride-pi hook-bridge extension
  *
- * Bridges Pi's tool_call / tool_result events onto Stride's four .stride.md
- * lifecycle hooks. Mirrors stride-gemini/hooks/stride-hook.sh in behavior.
+ * Bridges Pi's tool_call / tool_result events onto Stride's five .stride.md
+ * lifecycle hooks (before_doing, after_doing, before_review, after_review,
+ * after_goal). Mirrors stride-gemini/hooks/stride-hook.sh in behavior.
  *
  * Implementation choices (see stride-pi/docs/ADR-002-hook-mechanism.md):
  *   - before_doing / before_review / after_review run in tool_result (post-call).
  *     Failures are logged but do not affect the call (it already succeeded).
  *   - after_doing runs in tool_call (pre-call). Failure returns
- *     { block: true, reason } to veto the /complete curl per the docs at
- *     extensions.md:583 — handler return shape is ToolCallEventResult.
- *   - Pi imposes no handler-level timeout (verified in runner.js:598). Each
- *     hook is wrapped in Promise.race against a 120 000 ms deadline that
- *     matches stride-copilot/hooks/hooks.json. On timeout the child is
- *     SIGTERM'd then SIGKILL'd after a 5 s grace.
+ *     { block: true, reason } to veto the /complete curl — handler return
+ *     shape is ToolCallEventResult.
+ *   - after_goal is not URL-routed; it fires when the /complete or
+ *     /mark_reviewed response payload bundles an after_goal entry (see
+ *     after-goal-detector.ts / after-goal-runner.ts).
+ *   - Each hook has its own budget from HOOK_TIMEOUTS_MS (after_doing
+ *     300 000 ms, the other four 60 000 ms), not a single shared deadline.
+ *     runHookCommands runs the section's commands sequentially, giving each
+ *     command the time still remaining in the hook budget; when the budget is
+ *     exhausted the child is SIGTERM'd then SIGKILL'd after a 5 s grace.
  *   - After a successful claim, the API response is parsed to extract task
  *     metadata and written to `.stride-env-cache` so subsequent hook
  *     commands can reference $TASK_IDENTIFIER, $TASK_TITLE, etc.
