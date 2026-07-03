@@ -95,10 +95,11 @@ Pi uses the [Agent Skills standard](https://github.com/badlogic/pi-mono/tree/mai
 [Skills]
   stride-claiming-tasks, stride-completing-tasks, stride-creating-goals,
   stride-creating-tasks, stride-enriching-tasks, stride-subagent-workflow,
-  stride-workflow
+  stride-workflow, stride-task-explorer, stride-task-reviewer,
+  stride-task-decomposer, stride-hook-diagnostician
 ```
 
-That startup line confirms Pi has loaded all 7 skills from `~/.pi/agent/skills/` (or `.pi/skills/` for `--project` installs). Skill metadata (name + description from each `SKILL.md`'s YAML frontmatter) is then available to the agent throughout the session.
+That startup line confirms Pi has loaded all 11 skills from `~/.pi/agent/skills/` (or `.pi/skills/` for `--project` installs) — the seven lifecycle skills plus the four inline subagent skills (`stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`) that provide the dual-path fallback described in [Subagent Support](#subagent-support-dual-path). Skill metadata (name + description from each `SKILL.md`'s YAML frontmatter) is then available to the agent throughout the session.
 
 **Two activation paths:**
 
@@ -112,7 +113,7 @@ That startup line confirms Pi has loaded all 7 skills from `~/.pi/agent/skills/`
 
    The `stride-workflow` orchestrator is the recommended explicit entry point for any Stride work — it walks through claim → explore → implement → review → complete in a single skill.
 
-**Recommendation:** Start by typing `/skill:stride-workflow` the first time you begin a Stride task in a session. That one invocation loads the full orchestrator and its chain-of-reference to the other 6 skills.
+**Recommendation:** Start by typing `/skill:stride-workflow` the first time you begin a Stride task in a session. That one invocation loads the full orchestrator and its chain-of-reference to the other 10 skills.
 
 ## Mandatory Skill Chain
 
@@ -157,6 +158,10 @@ stride-enriching-tasks           ← WHEN a task has empty key_files/testing_str
 | `stride-creating-goals` | `POST /api/tasks/batch` | Create goals with batch format (root key must be `"goals"`) |
 | `stride-enriching-tasks` | Task has empty `key_files` / `testing_strategy` | Transform minimal specs into complete tasks |
 | `stride-subagent-workflow` | After claiming, before implementation | Decision matrix for exploration and review |
+| `stride-task-explorer` | After claiming (inline dual-path fallback) | Explore `key_files` and patterns before implementation — see [Subagent Support](#subagent-support-dual-path) |
+| `stride-task-reviewer` | Before `after_doing` (inline dual-path fallback) | Review the diff against acceptance criteria and pitfalls — see [Subagent Support](#subagent-support-dual-path) |
+| `stride-task-decomposer` | Goal / large undecomposed task (inline dual-path fallback) | Break a goal into dependency-ordered child tasks — see [Subagent Support](#subagent-support-dual-path) |
+| `stride-hook-diagnostician` | A blocking hook fails (inline dual-path fallback) | Diagnose the failure and return a prioritized fix plan — see [Subagent Support](#subagent-support-dual-path) |
 
 The `stride-creating-tasks`, `stride-enriching-tasks`, and `stride-workflow` skills also document the optional `technical_details` task field — a free-form JSON object (no fixed keys) for any extra technical context (data shapes, gotchas, decisions, links). It is optional everywhere and is **not** one of the five review_queue-scored fields, so a blank value is never a scoring gap.
 
