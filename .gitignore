@@ -26,3 +26,4 @@ yarn-error.log*
 .stride-diff-upload-state
 .stride-env-cache
 .stride-changed-files.json
+.stride-claim-dirty.json

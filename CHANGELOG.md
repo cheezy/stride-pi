@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-04
+
+Stride-Pi Enhancements release: a sweep that corrects the plugin's user-facing docs to match the shipped code and hardens the hook-bridge executor. Because two executor behavior changes ship alongside the documentation fixes (the `.stride.md` parser now supports backslash line-continuation, and the changed-files capture now subtracts pre-claim working-tree edits), this is a **minor** bump (1.10.0 → 1.11.0), not a patch.
+
+### Fixed — documentation now matches the shipped design
+
+- **`README.md`** (W1525) — Rewrote the **Hook Execution** section: it wrongly claimed "Pi has no automatic hook interception" and opened with a manual four-step procedure, contradicting the Setup/Subagent sections, `AGENTS.md`, and the default-installed hook-bridge extension. It now leads with the auto-firing extension path (all five hooks fire automatically; the agent supplies placeholder results) and frames the manual line-by-line procedure as the `--no-extensions` fallback. Added the fifth `after_goal` row to the Hook Lifecycle table (blocking, 60s), matching `HOOK_TIMEOUTS_MS`.
+- **`README.md`, `NOTES-phase1-validation.md`** (W1526) — Corrected the skill-surface count from 7 to **11**: the sample `[Skills]` block, the "loaded all N skills" prose, the chain-of-reference count, and the Skills table now list all eleven shipped skills (the four inline subagent skills cross-referenced to the Subagent Support section). Appended a dated superseding note to the historical NOTES validation record rather than rewriting it.
+- **`extensions/hook-bridge/index.ts`, `extensions/hook-bridge/curl-matcher.ts`** (W1527) — Refreshed the stale executor module docstrings: five hooks (not four), per-hook `HOOK_TIMEOUTS_MS` budgets (`after_doing` 300s, others 60s) enforced by a sequential per-command loop (not a single 120s `Promise.race`), dangling `extensions.md`/`runner.js` line references removed, and a note that `after_goal` is response-payload-driven rather than URL-routed. Comment-only; no behavior change.
+- **`skills/stride-hook-diagnostician/SKILL.md`, `extensions/subagent-dispatch/agents/stride-hook-diagnostician.md`** (W1530) — Restored dual-path parity for the fifth hook: both copies now enumerate all five hooks and carry an identical `after_goal` Failure Pattern Catalog entry (Mode A: the hook command failed — same stdout result shape; Mode B: the `PATCH /api/tasks/:goal_id/after_goal` forwarding failed → server grace-window worker), with the 60s threshold. The inline copy's stale single-120s timeout data was corrected to the per-hook map.
+- **`skills/stride-workflow/SKILL.md`** (W1531) — Closed the missing-Step-5 numbering gap: renumbered Steps 6–9 down to 5–8 across the prose, the workflow-steps vocabulary table, the ASCII flowchart, and the Quick Reference card, so the sequence is contiguous 0..8. Numbers-only; the `workflow_steps` step-NAME vocabulary is unchanged.
+
+### Added — hook-bridge executor hardening
+
+- **`.stride.md` backslash line-continuation** (W1528) — `parseHookSection` now joins a physical line ending in an unescaped trailing backslash with the following line into one logical command before the comment/blank filters run, matching bash continuation. A `#` comment's trailing backslash stays literal (never swallows the next command), and a dangling continuation at the fence close or EOF flushes gracefully. 7 new tests.
+- **Changed-files pre-claim-edit guard** (W1529) — At claim time the bridge records the files already dirty relative to `HEAD` (path → working-tree blob SHA) in a new `.stride-claim-dirty.json` state artifact (mode `0600`, no credentials). The `after_doing` snapshot now subtracts any of those paths whose content is unchanged at completion, so a task claimed against a dirty tree reports only its own claim→completion delta. Fail-open: any git/read failure degrades to the prior capture-everything behavior. 12 new tests. **Gitignore `.stride-claim-dirty.json`** alongside the other `.stride-*` state artifacts.
+
+### Backward compatibility
+
+No hook-bridge **wire shapes** changed — the claim/complete/changed_files payloads and the structured hook-result JSON are identical. The parser and changed-files changes are additive hardening (a previously-shredded multi-line command now runs as one; pre-claim dirt is now excluded), and everything else is documentation. The `node --test extensions/hook-bridge/*.test.ts` suite grew from 115 to **134 passing** tests. One new gitignore entry is required: `.stride-claim-dirty.json`.
+
+### Source
+
+G300 (Stride-Pi Enhancements) — W1525, W1526, W1527, W1528, W1529, W1530, W1531, and this release task W1532. stride-pi is **not** distributed through stride-marketplace, so there is no marketplace pin, `marketplace.json`, or marketplace README to update — the release is commit `main` + tag `v1.11.0` + a `gh release` on the stride-pi repo only.
+
 ## [1.10.0] - 2026-07-01
 
 ### Added — `API Notes & Limitations` section in the workflow orchestrator skill (G286 / W1421)
