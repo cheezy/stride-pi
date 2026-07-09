@@ -27,3 +27,5 @@ yarn-error.log*
 .stride-env-cache
 .stride-changed-files.json
 .stride-claim-dirty.json
+# Stride runtime dir — holds the canonical API-response file (D118)
+.stride/

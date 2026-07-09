@@ -162,6 +162,12 @@ export function captureChangedFiles(baseRef: string, cwd: string): ChangedFile[]
   const allFiles: string[] = [];
   for (const f of [...trackedFiles, ...untrackedFiles]) {
     if (HOOK_STATE_ARTIFACTS.has(f)) continue;
+    // W1641: everything under the .stride/ runtime dir — most notably the
+    // canonical response file .stride/.last-api-response.json (D118) — is a
+    // hook artifact, never part of the task's diff. git paths are
+    // repo-root-relative, so the leading ".stride/" anchors to the root
+    // runtime dir only (mirrors stride-hook.sh's `$0 !~ /^\.stride\//`).
+    if (f.startsWith(".stride/")) continue;
     if (!seen.has(f)) {
       seen.add(f);
       allFiles.push(f);
