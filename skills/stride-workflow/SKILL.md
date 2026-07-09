@@ -519,6 +519,21 @@ curl -X PATCH "$STRIDE_API_URL/api/tasks/$GOAL_ID/after_goal" \
 
 A `2xx` with `exit_code == 0` transitions the goal to Done. A `2xx` with `exit_code != 0` records the failure on the goal's `after_goal_attempts` audit log and leaves the goal In Progress. Do NOT silently retry on non-zero exit — surface the failure and let the operator decide.
 
+**How the extension detects `after_goal` reliably (canonical file + fresh GET).** The `/complete` (and `/mark_reviewed`) response can be large — the echoed `reviewer_result` alone runs to tens of KB — and Pi can truncate the `tool_result` payload the extension inspects, dropping the `after_goal` entry. The hook-bridge therefore does **not** depend on that payload being intact:
+
+1. **Canonical file (fast path).** On `before_review` / `after_review` the extension captures the intercepted output to `<cwd>/.stride/.last-api-response.json` when it is complete valid JSON, and the `after_goal` detector reads that untruncated file **first**, falling back to the tool-output candidates. Unlike the sibling Claude Code plugin, the agent does **not** pipe the curl through `| tee` — the extension writes the canonical file itself.
+2. **Fresh GET (guarantee).** When neither the file nor the intercepted output carries the entry, the extension issues an independent, hook-initiated `GET /api/tasks/:id/after_goal_status` — keyed off the just-completed task id, immune to truncation, needing no agent cooperation — and runs `## after_goal` from that server-truth result.
+
+The sources are de-duplicated: `after_goal` runs **at most once**. A disarmed or unreachable status is a clean no-op, so a flaky check never blocks completion.
+
+**Verify the push landed (last-child completions).** The `## after_goal` section is what performs any project push (e.g. `git push`); the server-side grace-window worker only flips the goal to Done — it does **not** push. So after a `needs_review=false` completion that finishes a goal's last child, confirm the push actually happened:
+
+```bash
+git log origin/main..main --oneline
+```
+
+An empty result means local `main` is level with the remote — the push landed. If it lists commits, the `## after_goal` section did not run (or performed no push) — run the `## after_goal` steps from `.stride.md` manually (push, then PATCH the after_goal result as above) so the goal's work reaches the remote.
+
 **Back-compat:**
 
 - Missing `## after_goal` section → skip the manual path entirely; the server's grace-window worker covers the goal transition with a synthetic attempt tagged `source: "after_goal_grace_worker"`.

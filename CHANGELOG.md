@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-07-09
+
+after_goal reliability release: the hook-bridge no longer depends on Pi's truncatable `tool_result` payload to detect the `after_goal` lifecycle. A truncated `/complete` or `/mark_reviewed` response — where the echoed `reviewer_result` alone can run to tens of KB — previously dropped the `after_goal` entry and silently skipped the goal-completion hook. The extension now writes an untruncated canonical response file, reads it in preference to the intercepted output, and falls back to an independent server-truth GET as the guarantee. Because this adds new hook-bridge runtime behavior (a new pure module plus wiring in `after-goal-detector.ts` / `after-goal-runner.ts` / `index.ts`), this is a **minor** bump (1.11.0 → 1.12.0).
+
+### Added — after_goal detection reliability (canonical file + fresh GET)
+
+- **`extensions/hook-bridge/after-goal-status.ts`** (W1641) — New pure, dependency-injected module ported from stride D118/D119: `readCanonicalResponse(cwd)` / `writeCanonicalResponse(cwd, text)` for `<cwd>/.stride/.last-api-response.json` (the writer refuses non-JSON, so a truncated payload never clobbers a good file), and `getAfterGoalStatus({fetch, apiBase, token, taskId})` → `{armed, goalId, env}` (injected `fetch`, no-ops on missing creds / network error / non-2xx / unparseable body). `.stride/` is excluded from `changed_files` and gitignored. 16 tests.
+- **`extensions/hook-bridge/after-goal-detector.ts`, `index.ts`** (W1642) — `collectCandidates` now consults an injected canonical-file reader **first**, falling back to the tool-output candidates; threaded through `responseHasAfterGoal` / `extractGoalEnvFromResult` as an optional trailing param (2-arg calls stay valid). On `before_review` / `after_review` the tool_result handler captures the first complete-valid-JSON candidate to the canonical file (a truncated one is skipped; a complete one overwrites a stale prior-call file). 12 tests.
+- **`extensions/hook-bridge/after-goal-runner.ts`, `index.ts`** (W1643) — D119 reliability guarantee: `runAfterGoalAndCleanup` gains an optional `freshAfterGoalStatus` dep. The fast path (file/output) is tried first; a run-once guard consults the fresh `GET /api/tasks/:id/after_goal_status` **only** when the fast path found nothing, so `after_goal` fires at most once. Keyed off the claim-time task id (env cache) with creds lifted from the completion curl; a disarmed/unreachable status is a clean no-op; `GOAL_ID` falls back to the status `goalId` when the server env omits it. 9 tests.
+- **End-to-end tests** (W1644) — New suite across the three pure modules proving detection + `GOAL_*` extraction + the run decision under a truncated output with a present canonical file, plus a no-file + stubbed-GET fallback and no-false-positive controls (disarmed GET, no fresh dep, after_goal-less file). All side effects stubbed; no real network or push. The `node --test extensions/hook-bridge/*.test.ts` suite grew to **180 passing** tests.
+
+### Changed — documentation
+
+- **`skills/stride-workflow/SKILL.md`** (W1645) — The "finishes the parent goal's last child" section now documents the canonical-file + fresh-GET detection guarantee (the extension writes the file itself — the agent does not `| tee`) and a **push-verification** step (`git log origin/main..main --oneline`), stated so it does not imply the grace-window worker pushes (it only flips the goal to Done).
+- **`skills/stride-hook-diagnostician/SKILL.md`** (W1645) — The `after_goal` failure modes now note that detection is reliable (canonical file + fresh GET, so a missed hook is not a truncation problem), and Mode B calls out that a Done goal is not proof the push landed when `## after_goal` pushes — verify with `git log origin/main..main`.
+
+### Backward compatibility
+
+No hook-bridge **wire shapes** changed — the claim/complete/changed_files payloads and the structured hook-result JSON are identical. The detector signature change is additive (an optional trailing reader param; existing 2-arg calls are unchanged), and `freshAfterGoalStatus` is an optional dep (omitting it preserves the pre-D119 fast-path-only behavior). One new gitignore entry is required: `.stride/`.
+
+### Source
+
+Parent goal (after_goal reliability port) — W1641, W1642, W1643, W1644, and this release/docs task W1645. stride-pi is **not** distributed through stride-marketplace, so there is no marketplace pin, `marketplace.json`, or marketplace README to update — the release is commit `main` + tag `v1.12.0` + a `gh release` on the stride-pi repo only.
+
 ## [1.11.0] - 2026-07-04
 
 Stride-Pi Enhancements release: a sweep that corrects the plugin's user-facing docs to match the shipped code and hardens the hook-bridge executor. Because two executor behavior changes ship alongside the documentation fixes (the `.stride.md` parser now supports backslash line-continuation, and the changed-files capture now subtracts pre-claim working-tree edits), this is a **minor** bump (1.10.0 → 1.11.0), not a patch.

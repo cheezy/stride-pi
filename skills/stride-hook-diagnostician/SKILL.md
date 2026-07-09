@@ -298,6 +298,8 @@ Suggested fix: Resolve conflicts in listed files. Open each file, find <<<< mark
 
 `after_goal` is the fifth blocking hook (60,000 ms budget, matching `HOOK_TIMEOUTS_MS`). It fires once, after the parent goal's final child task completes, when the server bundles an `after_goal` entry in the `/complete` or `/mark_reviewed` response. It has two distinct failure modes.
 
+**Detection is reliable, so a missed `after_goal` is rarely a truncation problem.** The hook-bridge reads the untruncated canonical response file (`<cwd>/.stride/.last-api-response.json`, which it writes itself on `before_review`/`after_review`) in preference to the truncatable `tool_result` payload, and when neither carries the entry it issues an independent hook-initiated `GET /api/tasks/:id/after_goal_status` as the guarantee. The two sources are de-duped so `after_goal` runs at most once. So an `after_goal` that "never fired" points at the hook itself (Mode A) or the PATCH forwarding / push (Mode B) — not at a truncated payload.
+
 **Mode A — the `## after_goal` command failed.** The hook-bridge runs the section and emits the same structured result shape on stdout as the other hooks:
 
 ```json
@@ -313,7 +315,7 @@ Suggested fix: Resolve conflicts in listed files. Open each file, find <<<< mark
 
 Diagnose `output` with the Failure Pattern Catalog above exactly as for any other hook (git, script, network, etc.); the failing command's own category sets the fix priority. The parent goal stays In Progress until the fix lands and the result is re-forwarded.
 
-**Mode B — the PATCH forwarding failed.** After the command runs, the agent PATCHes the captured result to `PATCH /api/tasks/:goal_id/after_goal` to flip the goal to Done. If that PATCH never lands (transport failure, non-2xx, missing `GOAL_ID`), the goal does NOT transition immediately — it falls back to the server's grace-window worker, which promotes it to Done automatically after the configured wait. Detection: an `after_goal` that succeeded locally (`exit_code: 0`) yet whose goal is still In Progress, or a PATCH error in the agent's log.
+**Mode B — the PATCH forwarding failed, or the push never landed.** After the command runs, the agent PATCHes the captured result to `PATCH /api/tasks/:goal_id/after_goal` to flip the goal to Done. If that PATCH never lands (transport failure, non-2xx, missing `GOAL_ID`), the goal does NOT transition immediately — it falls back to the server's grace-window worker, which promotes it to Done automatically after the configured wait. Detection: an `after_goal` that succeeded locally (`exit_code: 0`) yet whose goal is still In Progress, or a PATCH error in the agent's log. **Note the grace-window worker only flips the goal to Done — it does NOT push.** So if the `## after_goal` section performs a `git push`, a Done goal is not proof the work reached the remote: verify separately with `git log origin/main..main --oneline` (a non-empty result means the push did not land, even though the goal transitioned).
 
 **Structured output:**
 ```
@@ -323,7 +325,7 @@ Hook: after_goal
 Description: <Mode A: the after_goal command failed | Mode B: the /api/tasks/:goal_id/after_goal forwarding did not land>
 Suggested fix:
   - Mode A: fix the failing command per its catalog category, then re-run so the result re-forwards.
-  - Mode B: usually no code fix — the grace-window worker promotes the goal after its wait; investigate only if the goal stays In Progress past that window (check GOAL_ID and connectivity to the API).
+  - Mode B: usually no code fix — the grace-window worker promotes the goal after its wait; investigate only if the goal stays In Progress past that window (check GOAL_ID and connectivity to the API). If `## after_goal` pushes, also confirm the push landed with `git log origin/main..main --oneline` — the grace worker does not push, so re-run the push manually if commits remain.
 ```
 
 ## Hook Timeout Handling
