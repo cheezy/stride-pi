@@ -39,6 +39,8 @@ import {
   readFinalizerEnv,
   captureClaimDirtyBaseline,
   writeClaimDirtyBaseline,
+  extractApiBase,
+  extractToken,
   CHANGED_FILES_SNAPSHOT_FILE,
   DIFF_UPLOAD_STATE_FILE,
   CLAIM_DIRTY_BASELINE_FILE,
@@ -49,6 +51,7 @@ import {
   toolOutputCandidates,
 } from "./after-goal-detector.js";
 import {
+  getAfterGoalStatus,
   readCanonicalResponse,
   writeCanonicalResponse,
 } from "./after-goal-status.js";
@@ -194,6 +197,18 @@ export default function (pi: ExtensionAPI): void {
       hasAfterGoal: (content, details) => responseHasAfterGoal(content, details, canonicalReader),
       extractGoalEnv: (content, details) =>
         extractGoalEnvFromResult(content, details, canonicalReader),
+      // D119: when the fast path (file/output) detects no after_goal — the
+      // truncated-output case — ask the server directly. Keyed off the just-
+      // completed task id (from the env cache written at claim time), with
+      // apiBase/token lifted from the /complete|/mark_reviewed curl itself.
+      // Returns null when we cannot form the request, so the runner no-ops.
+      freshAfterGoalStatus: async () => {
+        const { taskId } = readFinalizerEnv(ctx.cwd);
+        const apiBase = extractApiBase(command);
+        const token = extractToken(command);
+        if (!taskId || !apiBase || !token) return null;
+        return getAfterGoalStatus({ fetch, apiBase, token, taskId });
+      },
       runAfterGoal: (goalEnv) => runHook("after_goal", ctx, goalEnv),
       emitResult: (agResult) => process.stdout.write(formatHookResultJson(agResult) + "\n"),
       deleteEnvCache: () => {
