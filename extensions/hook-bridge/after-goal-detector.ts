@@ -34,17 +34,51 @@ export const AFTER_GOAL_ENV_KEYS = [
 const PROTO_POLLUTION_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 /**
- * Build the candidate raw strings to inspect, in priority order:
+ * Reads the canonical response file's raw text, or null when the file is
+ * absent / empty / corrupt. Injected (rather than imported) so this module
+ * stays free of the fs-backed after-goal-status module and remains testable
+ * with a plain stub under `node --test` — index.ts wires the real
+ * readCanonicalResponse.
+ */
+export type CanonicalReader = () => string | null;
+
+/**
+ * The tool-output candidate strings to inspect, in priority order:
  * event.details.output (preferred, structured) then event.content
  * (fallback raw stdout). Mirrors extractTaskEnvFromResult in index.ts.
+ * Exported so index.ts can pick the first complete-JSON candidate to
+ * capture to the canonical file.
  */
-function collectCandidates(content: string, details: unknown): string[] {
+export function toolOutputCandidates(content: string, details: unknown): string[] {
   const candidates: string[] = [];
   if (details && typeof details === "object") {
     const output = (details as { output?: unknown }).output;
     if (typeof output === "string" && output.length > 0) candidates.push(output);
   }
   if (typeof content === "string" && content.length > 0) candidates.push(content);
+  return candidates;
+}
+
+/**
+ * Build the candidate raw strings to inspect, in priority order. When a
+ * canonical-response reader is supplied (D118 / W1609 read side), the
+ * untruncated canonical file is consulted FIRST: the harness can truncate
+ * event.content / details.output and drop the after_goal entry, but the file
+ * (written by the agent's `| tee` or index.ts's capture) holds the complete
+ * payload. The tool-output candidates remain the fallback for the back-compat
+ * path where no file is present.
+ */
+function collectCandidates(
+  content: string,
+  details: unknown,
+  canonicalReader?: CanonicalReader,
+): string[] {
+  const candidates: string[] = [];
+  if (canonicalReader) {
+    const fileText = canonicalReader();
+    if (fileText) candidates.push(fileText);
+  }
+  candidates.push(...toolOutputCandidates(content, details));
   return candidates;
 }
 
@@ -85,8 +119,9 @@ function parsePayload(raw: string): unknown {
 function findAfterGoalEntry(
   content: string,
   details: unknown,
+  canonicalReader?: CanonicalReader,
 ): Record<string, unknown> | null {
-  for (const raw of collectCandidates(content, details)) {
+  for (const raw of collectCandidates(content, details, canonicalReader)) {
     const payload = parsePayload(raw);
     if (!payload || typeof payload !== "object") continue;
 
@@ -111,8 +146,12 @@ function findAfterGoalEntry(
  * routing is additive, so any uncertainty falls back to "no after_goal
  * detected", preserving pre-W797 behavior for the four existing hooks.
  */
-export function responseHasAfterGoal(content: string, details: unknown): boolean {
-  return findAfterGoalEntry(content, details) !== null;
+export function responseHasAfterGoal(
+  content: string,
+  details: unknown,
+  canonicalReader?: CanonicalReader,
+): boolean {
+  return findAfterGoalEntry(content, details, canonicalReader) !== null;
 }
 
 /**
@@ -134,11 +173,12 @@ export function responseHasAfterGoal(content: string, details: unknown): boolean
 export function extractGoalEnvFromResult(
   content: string,
   details: unknown,
+  canonicalReader?: CanonicalReader,
 ): Record<string, string> {
   const result: Record<string, string> = {};
   for (const key of AFTER_GOAL_ENV_KEYS) result[key] = "";
 
-  const entry = findAfterGoalEntry(content, details);
+  const entry = findAfterGoalEntry(content, details, canonicalReader);
   const env = entry?.env;
   if (!env || typeof env !== "object" || Array.isArray(env)) return result;
 

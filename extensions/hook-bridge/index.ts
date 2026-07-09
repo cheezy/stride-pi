@@ -46,7 +46,12 @@ import {
 import {
   responseHasAfterGoal,
   extractGoalEnvFromResult,
+  toolOutputCandidates,
 } from "./after-goal-detector.js";
+import {
+  readCanonicalResponse,
+  writeCanonicalResponse,
+} from "./after-goal-status.js";
 import { runAfterGoalAndCleanup } from "./after-goal-runner.js";
 import {
   type CommandOutput,
@@ -157,6 +162,21 @@ export default function (pi: ExtensionAPI): void {
       }
     }
 
+    // D118 (write side): the after_goal entry rides in the /complete
+    // (before_review) or /mark_reviewed (after_review) response, which the
+    // harness can truncate — dropping the entry from event.content /
+    // details.output. Capture the intercepted output to the canonical file
+    // now so the detector below reads the untruncated payload. Only a
+    // complete, valid-JSON candidate is written (writeCanonicalResponse
+    // refuses anything else), so a truncated output is skipped and any good
+    // file from the agent's `| tee` survives; a complete current output
+    // overwrites a stale prior-call file.
+    if (hook === "before_review" || hook === "after_review") {
+      for (const raw of toolOutputCandidates(event.content, event.details)) {
+        if (writeCanonicalResponse(ctx.cwd, raw)) break;
+      }
+    }
+
     const result = await runHook(hook, ctx);
     if (result && !result.success) {
       reportNonBlockingFailure(ctx, result);
@@ -166,10 +186,14 @@ export default function (pi: ExtensionAPI): void {
     // the env cache. Ordering matters: cleanup must follow after_goal so
     // the hook runs with its env intact on the mark_reviewed route. The
     // forwarded goalEnv carries the GOAL_* / BOARD_* / COLUMN_* /
-    // AGENT_NAME values the server supplied verbatim in `hook.env`.
+    // AGENT_NAME values the server supplied verbatim in `hook.env`. The
+    // detector reads the canonical file FIRST (D118 read side) via the
+    // injected reader, falling back to the tool-output candidates.
+    const canonicalReader = () => readCanonicalResponse(ctx.cwd);
     await runAfterGoalAndCleanup(hook, !result || result.success, event.content, event.details, {
-      hasAfterGoal: responseHasAfterGoal,
-      extractGoalEnv: extractGoalEnvFromResult,
+      hasAfterGoal: (content, details) => responseHasAfterGoal(content, details, canonicalReader),
+      extractGoalEnv: (content, details) =>
+        extractGoalEnvFromResult(content, details, canonicalReader),
       runAfterGoal: (goalEnv) => runHook("after_goal", ctx, goalEnv),
       emitResult: (agResult) => process.stdout.write(formatHookResultJson(agResult) + "\n"),
       deleteEnvCache: () => {
