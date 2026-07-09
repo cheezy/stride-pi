@@ -177,3 +177,32 @@ describe("capture semantics (write side, mirroring index.ts)", () => {
     });
   });
 });
+
+// W1644: detection/env edge cases pinning the fast-path decision.
+describe("detection edge cases (W1644)", () => {
+  it("GOAL_ID omitted from the after_goal env defaults to '' (defined-but-empty)", () => {
+    // The detector forwards the server env verbatim and defaults every
+    // canonical key the server omitted to "" — never absent — so a `set -u`
+    // ## after_goal referencing $GOAL_ID does not abort. (The goalId-based
+    // fallback is the fresh-GET path's job, exercised in after-goal-runner.)
+    const fileNoId = afterGoalResponse({ GOAL_TITLE: "No id here" });
+    const env = extractGoalEnvFromResult(TRUNCATED, { output: TRUNCATED }, () => fileNoId);
+    assert.equal(env.GOAL_TITLE, "No id here");
+    assert.equal(env.GOAL_ID, "");
+    assert.equal(env.GOAL_IDENTIFIER, "");
+  });
+
+  it("a present file WITHOUT an after_goal entry is not a false positive", () => {
+    // File-first must not manufacture an after_goal from an unrelated response.
+    const noGoal = JSON.stringify({ data: { id: 1 }, hooks: [{ name: "before_review" }] });
+    const reader: CanonicalReader = () => noGoal;
+    assert.equal(responseHasAfterGoal(TRUNCATED, { output: TRUNCATED }, reader), false);
+    const env = extractGoalEnvFromResult(TRUNCATED, { output: TRUNCATED }, reader);
+    assert.equal(env.GOAL_ID, "");
+  });
+
+  it("a completely absent hooks array is not a false positive", () => {
+    const reader: CanonicalReader = () => JSON.stringify({ data: {}, ok: true });
+    assert.equal(responseHasAfterGoal(TRUNCATED, { output: TRUNCATED }, reader), false);
+  });
+});
