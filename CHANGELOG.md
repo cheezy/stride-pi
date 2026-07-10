@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-07-10
+
+changed_files upload reliability fix: ports the two Claude Code hook changes (D127 + W1658) that stop completed review tasks from landing with an empty `changed_files` array. The hook was uploading the per-file diff to the task id from the env cache, which goes stale when the claim response is hidden from the hook — so the diff was PUT to the *previous* task and the current task's `changed_files` stayed empty, silently. This is a **patch** bump (1.12.0 → 1.12.1): no wire shapes change and the upload target resolution is now derived from the authoritative `/complete` URL.
+
+### Fixed — target the changed_files upload by the /complete URL id (D127)
+
+- **`extensions/hook-bridge/curl-matcher.ts`, `changed-files.ts`** (W1671) — New `taskIdFromCommand()` parses the bare **numeric** id from a `/complete` or `/mark_reviewed` command URL (mirrors `task_id_from_command` in `stride/hooks/stride-hook.sh`; pure string parse, no network call, non-numeric segments rejected). `finalizeAfterDoing` and `selfHealChangedFilesUpload` now resolve the upload target as `taskIdFromCommand(command) || opts.taskId`, so a stale env-cache `TASK_ID` can no longer misroute the diff; the env id remains the fallback only on the claim path (whose URL carries no id). 8 unit tests + stale-env targeting integration tests for both finalize and self-heal.
+
+### Fixed — fail loud on a terminal changed_files upload failure (W1658)
+
+- **`extensions/hook-bridge/changed-files.ts`** (W1672) — When the `before_review` self-heal's last-retry PUT returns non-2xx, the hook now emits a distinct `CHANGED_FILES UPLOAD UNRESOLVED for task <id> (HTTP <code>)` message to stderr and appends `unresolved=yes` to `.stride-diff-upload-state`, so a definitively-lost diff is queryable rather than silent. Fail-soft: the completion is never vetoed. A later successful (2xx) PUT overwrites the state file and self-clears the mark; a legitimately-empty diff that PUTs 2xx takes the success path. Only the id + HTTP code are recorded — never the bearer token. 3 tests. The `node --test extensions/hook-bridge/*.test.ts` suite grew to **195 passing** tests.
+
+### Backward compatibility
+
+No hook-bridge **wire shapes** changed — the claim/complete/changed_files payloads and the structured hook-result JSON are identical. The change is confined to how the upload target id is resolved (URL-derived, env-cache fallback) and an added terminal fail-loud signal.
+
 ## [1.12.0] - 2026-07-09
 
 after_goal reliability release: the hook-bridge no longer depends on Pi's truncatable `tool_result` payload to detect the `after_goal` lifecycle. A truncated `/complete` or `/mark_reviewed` response — where the echoed `reviewer_result` alone can run to tens of KB — previously dropped the `after_goal` entry and silently skipped the goal-completion hook. The extension now writes an untruncated canonical response file, reads it in preference to the intercepted output, and falls back to an independent server-truth GET as the guarantee. Because this adds new hook-bridge runtime behavior (a new pure module plus wiring in `after-goal-detector.ts` / `after-goal-runner.ts` / `index.ts`), this is a **minor** bump (1.11.0 → 1.12.0).
