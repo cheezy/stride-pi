@@ -22,6 +22,8 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { taskIdFromCommand } from "./curl-matcher.ts";
+
 export const TRUNC_MARKER = "[diff truncated at 500 lines]";
 export const BIN_PLACEHOLDER = "[binary file — no diff captured]";
 export const MAX_LINES = 500;
@@ -489,13 +491,17 @@ export async function finalizeAfterDoing(opts: FinalizeOptions): Promise<void> {
 
   writeSnapshot(cwd, snapshot);
 
-  if (!opts.taskId) return;
+  // Target the upload by the /complete URL id (D127); the env-cache TASK_ID is
+  // only a fallback for the claim path, whose URL carries no id. This removes
+  // the dependency on the claim having seeded the cache with the correct id.
+  const targetId = taskIdFromCommand(command) || opts.taskId;
+  if (!targetId) return;
   const apiBase = extractApiBase(command);
   const token = extractToken(command);
   if (!apiBase || !token) return;
 
-  const code = await putChangedFiles(apiBase, token, opts.taskId, snapshot);
-  recordDiffUploadState(cwd, opts.taskId, code);
+  const code = await putChangedFiles(apiBase, token, targetId, snapshot);
+  recordDiffUploadState(cwd, targetId, code);
 }
 
 /**
@@ -516,12 +522,19 @@ export async function selfHealChangedFilesUpload(
   opts: FinalizeOptions,
 ): Promise<void> {
   const { cwd, command } = opts;
-  if (!opts.taskId) return;
+
+  // Target the upload by the /complete URL id (D127); fall back to the env-cache
+  // TASK_ID only when the command URL carries no id. finalize and self-heal MUST
+  // agree on the target id, so both resolve it the same way — otherwise the
+  // finalize (URL-targeted) and this self-heal would disagree on which task the
+  // recorded state belongs to.
+  const targetId = taskIdFromCommand(command) || opts.taskId;
+  if (!targetId) return;
 
   // Already healthy? A recorded 2xx for this exact task means the after_doing
   // upload landed — nothing to heal, and we must not overwrite the snapshot.
   const state = readDiffUploadState(cwd);
-  if (state.taskId === opts.taskId && (state.httpCode ?? "").startsWith("2")) {
+  if (state.taskId === targetId && (state.httpCode ?? "").startsWith("2")) {
     return;
   }
 
@@ -540,8 +553,8 @@ export async function selfHealChangedFilesUpload(
 
   writeSnapshot(cwd, snapshot);
 
-  const code = await putChangedFiles(apiBase, token, opts.taskId, snapshot);
-  recordDiffUploadState(cwd, opts.taskId, code);
+  const code = await putChangedFiles(apiBase, token, targetId, snapshot);
+  recordDiffUploadState(cwd, targetId, code);
 }
 
 const ENV_CACHE_FILE = ".stride-env-cache";

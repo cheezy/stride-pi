@@ -505,7 +505,9 @@ describe("finalizeAfterDoing (fetch mocked)", () => {
     }
   });
 
-  it("skips PUT when taskId is undefined", async () => {
+  it("skips PUT when neither the URL nor the env yields an id", async () => {
+    // No env taskId and a non-numeric URL segment (W999) → taskIdFromCommand
+    // returns "" and there is no fallback, so the guard still skips the PUT.
     const dir = mktemp();
     try {
       gitInit(dir);
@@ -523,6 +525,61 @@ describe("finalizeAfterDoing (fetch mocked)", () => {
       });
 
       assert.equal(stub.calls.length, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PUTs to the /complete URL id even when the env taskId is undefined (D127)", async () => {
+    // Previously a missing env taskId meant no PUT. Now the numeric id is parsed
+    // from the /complete URL, so the diff still uploads — targeting the URL id.
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const command = `curl "https://api.example.com/api/tasks/12345/complete" -H "Authorization: Bearer t"`;
+      await finalizeAfterDoing({
+        cwd: dir,
+        command,
+        taskId: undefined,
+        baseRef: base,
+      });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/12345/changed_files");
+      assert.equal(readDiffUploadState(dir).taskId, "12345");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("targets the /complete URL id over a stale env taskId (D127)", async () => {
+    // Regression guard for D126/D127: a stale env-cache TASK_ID must not misroute
+    // the diff to the previous task — the authoritative id is in the /complete URL.
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      // Env cache carries a stale id (9999); the /complete URL carries 12345.
+      const command = `curl "https://api.example.com/api/tasks/12345/complete" -H "Authorization: Bearer t"`;
+      await finalizeAfterDoing({
+        cwd: dir,
+        command,
+        taskId: "9999",
+        baseRef: base,
+      });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/12345/changed_files");
+      assert.equal(readDiffUploadState(dir).taskId, "12345");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -966,6 +1023,33 @@ describe("selfHealChangedFilesUpload", () => {
 
       assert.equal(stub.calls.length, 1);
       assert.equal(readDiffUploadState(dir).taskId, "W999");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("targets the /complete URL id over a stale env taskId (D127)", async () => {
+    // The self-heal must resolve the target id the same way finalize does, or
+    // the two disagree on which task the recorded state belongs to.
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const numericCommand = `curl "https://api.example.com/api/tasks/12345/complete" -H "Authorization: Bearer t"`;
+      await selfHealChangedFilesUpload({
+        cwd: dir,
+        command: numericCommand,
+        taskId: "9999",
+        baseRef: base,
+      });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/12345/changed_files");
+      assert.equal(readDiffUploadState(dir).taskId, "12345");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
