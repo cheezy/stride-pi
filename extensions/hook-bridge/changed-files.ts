@@ -555,6 +555,27 @@ export async function selfHealChangedFilesUpload(
 
   const code = await putChangedFiles(apiBase, token, targetId, snapshot);
   recordDiffUploadState(cwd, targetId, code);
+
+  // W1658: fail loud on a terminal upload failure. The before_review self-heal
+  // is the LAST retry, so a non-2xx here means the diff is definitively lost for
+  // this task. Emit a distinct (from putChangedFiles' per-attempt warning) signal
+  // and mark the state file unresolved so the failure is queryable, not silent.
+  // Fail-soft: never disturb the already-succeeded /complete. A later 2xx PUT
+  // calls recordDiffUploadState, which truncates the state file and self-clears
+  // the mark. A legitimately-empty diff that PUTs 2xx takes the success path.
+  // Only the id + HTTP code are recorded — never the bearer token.
+  if (!String(code).startsWith("2")) {
+    console.error(
+      `stride-hook: CHANGED_FILES UPLOAD UNRESOLVED for task ${targetId} (HTTP ${code}) after the before_review retry — the review will show NO file diffs. Re-run the changed_files PUT to recover.`,
+    );
+    try {
+      fs.appendFileSync(path.join(cwd, DIFF_UPLOAD_STATE_FILE), "unresolved=yes\n", {
+        encoding: "utf-8",
+      });
+    } catch {
+      // best-effort; never disturb the completion
+    }
+  }
 }
 
 const ENV_CACHE_FILE = ".stride-env-cache";

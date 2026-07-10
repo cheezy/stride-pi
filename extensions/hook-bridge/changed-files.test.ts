@@ -1055,6 +1055,108 @@ describe("selfHealChangedFilesUpload", () => {
     }
   });
 
+  it("fails loud on a terminal non-2xx PUT: distinct UNRESOLVED message + unresolved=yes marker, without throwing (W1658)", async () => {
+    const dir = mktemp();
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("boom", { status: 500 }));
+      // Resolves (does not throw) even though the final PUT failed — fail-soft.
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      // Distinct terminal signal (separate from putChangedFiles' per-attempt warning).
+      assert.ok(
+        errors.some(
+          (e) =>
+            e.includes("CHANGED_FILES UPLOAD UNRESOLVED for task W999 (HTTP 500)") &&
+            e.includes("before_review retry"),
+        ),
+        "expected the distinct UNRESOLVED terminal message",
+      );
+      assert.ok(!errors.join(" ").includes("Bearer"), "token must never appear in the message");
+      // State file carries the queryable unresolved marker (id + code only).
+      const stateText = fs.readFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "utf-8");
+      assert.ok(stateText.includes("unresolved=yes"), "expected unresolved=yes marker");
+      assert.ok(stateText.includes("task_id=W999"));
+      assert.ok(stateText.includes("http_code=500"));
+      assert.ok(!stateText.includes("Bearer"), "token must never be written to the state file");
+    } finally {
+      console.error = originalError;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a subsequent 2xx PUT overwrites the state file and self-clears the unresolved mark (W1658)", async () => {
+    const dir = mktemp();
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      // First self-heal fails terminally → marks unresolved.
+      stub = stubFetch(() => new Response("boom", { status: 500 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+      assert.ok(
+        fs.readFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "utf-8").includes("unresolved=yes"),
+        "precondition: mark should be set after the failed upload",
+      );
+      stub.restore();
+
+      // A later successful self-heal overwrites the state file, clearing the mark.
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+
+      const stateText = fs.readFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "utf-8");
+      assert.ok(!stateText.includes("unresolved=yes"), "mark must self-clear on a 2xx overwrite");
+      assert.equal(readDiffUploadState(dir).httpCode, "200");
+    } finally {
+      console.error = originalError;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a legitimately-empty diff that PUTs 2xx takes the success path — no UNRESOLVED, no marker (W1658)", async () => {
+    const dir = mktemp();
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      // Clean repo → empty snapshot, but the PUT still succeeds (2xx).
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "W999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      assert.ok(
+        !errors.some((e) => e.includes("UNRESOLVED")),
+        "a 2xx upload must not emit the UNRESOLVED message",
+      );
+      const stateText = fs.readFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "utf-8");
+      assert.ok(!stateText.includes("unresolved=yes"), "a 2xx upload must not mark unresolved");
+      assert.equal(readDiffUploadState(dir).httpCode, "200");
+    } finally {
+      console.error = originalError;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not re-upload or clobber the snapshot when the command has no credentials", async () => {
     const dir = mktemp();
     try {
