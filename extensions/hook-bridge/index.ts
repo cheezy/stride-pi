@@ -67,6 +67,7 @@ import {
   type TaskEnv,
   TASK_ENV_KEYS,
   resolveClaimEnvCache,
+  resolveFinalizeBeforeDoingEnv,
 } from "./env-cache.js";
 
 // Per-hook timeout budgets. after_doing runs the full quality-gate suite
@@ -97,8 +98,8 @@ export default function (pi: ExtensionAPI): void {
     // pre-gate call is gated to after_doing by the early return above, so it
     // never fires for before_doing/before_review/after_review/after_goal.
     try {
-      const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
-      await finalizeAfterDoing({ cwd: ctx.cwd, command, taskId, baseRef });
+      const { taskId, baseRef, trusted } = readFinalizerEnv(ctx.cwd);
+      await finalizeAfterDoing({ cwd: ctx.cwd, command, taskId, baseRef, trusted });
     } catch {
       // intentional: never veto /complete on capture/upload failure
     }
@@ -115,8 +116,8 @@ export default function (pi: ExtensionAPI): void {
     // changes the gate itself produced (e.g. formatters) are captured. Fail-soft:
     // any error here must not block the agent's /complete curl.
     try {
-      const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
-      await finalizeAfterDoing({ cwd: ctx.cwd, command, taskId, baseRef });
+      const { taskId, baseRef, trusted } = readFinalizerEnv(ctx.cwd);
+      await finalizeAfterDoing({ cwd: ctx.cwd, command, taskId, baseRef, trusted });
     } catch {
       // intentional: never veto /complete on capture/upload failure
     }
@@ -133,24 +134,20 @@ export default function (pi: ExtensionAPI): void {
 
     if (hook === "before_doing") {
       const taskEnv = extractTaskEnvFromResult(event.content, event.details);
-      // Anchor changed-files to the claim-time HEAD (computed now, not at
-      // completion). G224: a claim always opens a new task window, so refresh
-      // TASK_BASE_REF on EVERY detected claim — even when the task-field parse
-      // yields {} — preserving any existing TASK_ identity lines. Otherwise a
-      // base ref from a prior claim survives and the after_doing diff spans
-      // every commit since that older claim. The resolve policy returns null
-      // (no write) only when the parse is empty AND HEAD is unresolvable.
-      const baseRef = captureBaseRef(ctx.cwd);
-      const resolved = resolveClaimEnvCache(taskEnv, baseRef, loadEnvCache(ctx.cwd));
+      // (D142) Persist task IDENTITY only and strip any inherited
+      // TASK_BASE_REF / TASK_BASE_REF_TRUSTED. The base is (re)captured and
+      // (re)persisted AFTER runHook returns (finalizeBeforeDoing below), once
+      // the ## before_doing section's `git pull` has moved HEAD to the
+      // post-pull branch point — capturing it now would anchor the diff at the
+      // PRE-pull commit and span another clone's pulled work (D132/W1678).
+      const resolved = resolveClaimEnvCache(taskEnv, loadEnvCache(ctx.cwd));
       if (resolved) writeEnvCache(ctx.cwd, resolved);
       // Clear any leftover snapshot/upload-state/claim-dirty-baseline from a
       // prior task so a stale 2xx cannot suppress the new task's before_review
-      // self-heal. Runs on the claim regardless of whether task env parsed.
+      // self-heal. Runs on the claim regardless of whether task env parsed. The
+      // claim-time dirty baseline is likewise (re)recorded post-section, hashed
+      // against the post-pull tree.
       deleteDiffArtifacts(ctx.cwd);
-      // W1529: record which files are already dirty at claim time (path -> blob
-      // SHA) so the after_doing snapshot can subtract pre-claim edits the task
-      // never touched. Written AFTER deleteDiffArtifacts clears the prior one.
-      writeClaimDirtyBaseline(ctx.cwd, captureClaimDirtyBaseline(ctx.cwd));
     }
 
     // before_review self-heal: if the after_doing finalize never landed the
@@ -158,8 +155,8 @@ export default function (pi: ExtensionAPI): void {
     // fresh tool_result budget. Gated to before_review; fail-soft.
     if (hook === "before_review") {
       try {
-        const { taskId, baseRef } = readFinalizerEnv(ctx.cwd);
-        await selfHealChangedFilesUpload({ cwd: ctx.cwd, command, taskId, baseRef });
+        const { taskId, baseRef, trusted } = readFinalizerEnv(ctx.cwd);
+        await selfHealChangedFilesUpload({ cwd: ctx.cwd, command, taskId, baseRef, trusted });
       } catch {
         // intentional: never disturb the already-succeeded /complete call
       }
@@ -183,6 +180,20 @@ export default function (pi: ExtensionAPI): void {
     const result = await runHook(hook, ctx);
     if (result && !result.success) {
       reportNonBlockingFailure(ctx, result);
+    }
+
+    // (D142) Capture TASK_BASE_REF only now — AFTER the ## before_doing section
+    // ran its `git pull` / branch checkout — so the base is the post-pull branch
+    // point, then re-record the claim-time dirty baseline against that same
+    // post-pull tree. Runs even when the section failed (the claim already
+    // succeeded — this tool_result cannot veto it — and a partially-run section
+    // still leaves HEAD more accurate than the pre-pull value). No-op for every
+    // other hook route.
+    if (hook === "before_doing") {
+      const baseRef = captureBaseRef(ctx.cwd);
+      const finalized = resolveFinalizeBeforeDoingEnv(baseRef, loadEnvCache(ctx.cwd));
+      if (finalized) writeEnvCache(ctx.cwd, finalized);
+      writeClaimDirtyBaseline(ctx.cwd, captureClaimDirtyBaseline(ctx.cwd));
     }
 
     // Run `## after_goal` (when the server bundled one) and then clean up

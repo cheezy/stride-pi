@@ -29,7 +29,11 @@ import {
   tailLines,
   type HookResult,
 } from "./hook-result.ts";
-import { resolveClaimEnvCache, type TaskEnv } from "./env-cache.ts";
+import {
+  resolveClaimEnvCache,
+  resolveFinalizeBeforeDoingEnv,
+  type TaskEnv,
+} from "./env-cache.ts";
 
 // Build the Claude/Gemini-style Bash-tool wrapper transport shape — used
 // when Pi's tool_result event delivers the raw response via event.content
@@ -433,41 +437,76 @@ describe("tailLines (D65 tail truncation)", () => {
   });
 });
 
-describe("resolveClaimEnvCache — unconditional claim-time base-ref refresh (G224)", () => {
-  it("stamps the base ref onto parsed task fields", () => {
-    const parsed: TaskEnv = { TASK_ID: "3700", TASK_IDENTIFIER: "D80" };
-    const result = resolveClaimEnvCache(parsed, "abc123", {});
-    assert.deepEqual(result, { TASK_ID: "3700", TASK_IDENTIFIER: "D80", TASK_BASE_REF: "abc123" });
+describe("resolveClaimEnvCache — identity-only claim + inherited-base strip (D142)", () => {
+  it("persists parsed identity only, stripping any base/trust the parse carried", () => {
+    const parsed: TaskEnv = {
+      TASK_ID: "3700",
+      TASK_IDENTIFIER: "D80",
+      TASK_BASE_REF: "abc123",
+      TASK_BASE_REF_TRUSTED: "1",
+    };
+    const result = resolveClaimEnvCache(parsed, {});
+    // The base and trust marker are dropped — the claim never writes them (the
+    // ## before_doing pull hasn't run yet). finalizeBeforeDoing writes them.
+    assert.deepEqual(result, { TASK_ID: "3700", TASK_IDENTIFIER: "D80" });
   });
 
-  it("refreshes the base ref on an empty parse, preserving existing identity lines", () => {
-    const existing: TaskEnv = { TASK_ID: "3700", TASK_IDENTIFIER: "D80", TASK_BASE_REF: "oldref" };
-    const result = resolveClaimEnvCache({}, "newref", existing);
-    // Identity lines preserved; only the stale base ref is refreshed.
-    assert.deepEqual(result, { TASK_ID: "3700", TASK_IDENTIFIER: "D80", TASK_BASE_REF: "newref" });
+  it("on an empty parse, preserves existing identity but strips inherited base + trust marker", () => {
+    const existing: TaskEnv = {
+      TASK_ID: "3700",
+      TASK_IDENTIFIER: "D80",
+      TASK_BASE_REF: "oldref",
+      TASK_BASE_REF_TRUSTED: "1",
+    };
+    const result = resolveClaimEnvCache({}, existing);
+    assert.deepEqual(result, { TASK_ID: "3700", TASK_IDENTIFIER: "D80" });
   });
 
-  it("returns null on an empty parse when HEAD is unresolvable (non-git dir)", () => {
-    const result = resolveClaimEnvCache({}, "", { TASK_ID: "3700", TASK_BASE_REF: "oldref" });
+  it("returns null on an empty parse when only a stale base/trust remains to strip", () => {
+    const result = resolveClaimEnvCache({}, {
+      TASK_BASE_REF: "oldref",
+      TASK_BASE_REF_TRUSTED: "1",
+    });
+    // Nothing but the base/trust to strip → null (writeEnvCache no-op); the
+    // stale base is recomputed by resolveSnapshotBase and overwritten by
+    // finalizeBeforeDoing post-section regardless.
     assert.equal(result, null);
   });
 
-  it("writes just the base ref on an empty parse with no prior cache", () => {
-    const result = resolveClaimEnvCache({}, "abc123", {});
-    assert.deepEqual(result, { TASK_BASE_REF: "abc123" });
-  });
-
-  it("keeps parsed fields without a base ref when HEAD is unresolvable", () => {
-    const result = resolveClaimEnvCache({ TASK_ID: "3700" }, "", {});
-    assert.deepEqual(result, { TASK_ID: "3700" });
-    assert.ok(result && !("TASK_BASE_REF" in result));
+  it("returns null on an empty parse with an empty cache", () => {
+    assert.equal(resolveClaimEnvCache({}, {}), null);
   });
 
   it("does not mutate its arguments (pure)", () => {
-    const parsed: TaskEnv = Object.freeze({ TASK_ID: "3700" });
+    const parsed: TaskEnv = Object.freeze({ TASK_ID: "3700", TASK_BASE_REF: "x" });
     const existing: TaskEnv = Object.freeze({ TASK_IDENTIFIER: "D80", TASK_BASE_REF: "old" });
-    // Both calls would throw if the function mutated a frozen input.
-    assert.doesNotThrow(() => resolveClaimEnvCache(parsed, "abc", existing));
-    assert.doesNotThrow(() => resolveClaimEnvCache({}, "abc", existing));
+    assert.doesNotThrow(() => resolveClaimEnvCache(parsed, existing));
+    assert.doesNotThrow(() => resolveClaimEnvCache({}, existing));
+  });
+});
+
+describe("resolveFinalizeBeforeDoingEnv — post-section base + trust marker (D142)", () => {
+  it("stamps the post-pull base + trust marker, preserving identity and replacing any old base", () => {
+    const existing: TaskEnv = {
+      TASK_ID: "3700",
+      TASK_IDENTIFIER: "D80",
+      TASK_BASE_REF: "oldpreref",
+    };
+    const result = resolveFinalizeBeforeDoingEnv("postpullref", existing);
+    assert.deepEqual(result, {
+      TASK_ID: "3700",
+      TASK_IDENTIFIER: "D80",
+      TASK_BASE_REF: "postpullref",
+      TASK_BASE_REF_TRUSTED: "1",
+    });
+  });
+
+  it("returns null when there is no base ref (non-git dir)", () => {
+    assert.equal(resolveFinalizeBeforeDoingEnv("", { TASK_ID: "3700" }), null);
+  });
+
+  it("does not mutate its arguments (pure)", () => {
+    const existing: TaskEnv = Object.freeze({ TASK_ID: "3700", TASK_BASE_REF: "old" });
+    assert.doesNotThrow(() => resolveFinalizeBeforeDoingEnv("newref", existing));
   });
 });

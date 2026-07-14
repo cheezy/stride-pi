@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-07-14
+
+Ports all three of the canonical `stride` plugin's D142 base-ref / snapshot fixes (released as `stride` v1.36.0) into the Pi hook bridge. `TASK_BASE_REF` was captured at claim time — in the `tool_result` before_doing branch, **before** `runHook` executed the `## before_doing` section's `git pull` — so the after_doing `changed_files` diff spanned commits pulled from **another clone** (the D132/W1678 incident), and the W1529 dirty-baseline filter silently dropped committed task work (D137). This is a **minor** bump (1.12.1 → 1.13.0): additive trust-guard + reorder, no wire-shape changes. Per the ADR-002 structural constraint, all new logic lives in the pure, unit-tested modules (`env-cache.ts`, `changed-files.ts`); `index.ts` only wires them.
+
+### Fixed — capture `TASK_BASE_REF` after the before_doing section (D132)
+
+- **`extensions/hook-bridge/env-cache.ts`, `index.ts`** — `resolveClaimEnvCache` is inverted to persist task **identity only** and strip any inherited `TASK_BASE_REF` / `TASK_BASE_REF_TRUSTED`; a new pure `resolveFinalizeBeforeDoingEnv` writes the base plus the `TASK_BASE_REF_TRUSTED` marker, which `index.ts` now calls **after** `runHook` returns for the before_doing route (regardless of hook exit code), re-recording the claim-time dirty baseline against the post-pull tree. `TASK_BASE_REF_TRUSTED` is added to `TASK_ENV_KEYS`.
+
+### Fixed — trust-guard the snapshot base (D132)
+
+- **`extensions/hook-bridge/changed-files.ts`** — New exported `resolveSnapshotBase(baseRef, cwd, trusted)` implements the three reference rules (empty/unresolvable, non-ancestor-of-`HEAD`, and — for **unmarked** inherited bases only — strict-ancestor-of-branch-point) from the merge-base of `HEAD` and the origin default branch, with a loud `console.error` recompute (a repo with no origin passes the base through). `finalizeAfterDoing` and `selfHealChangedFilesUpload` resolve the base **once per task window** and persist it as a `base=` line in `.stride-diff-upload-state` (`recordDiffUploadState` / `readDiffUploadState` gain the field), reusing it on the post-gate refresh and the before_review self-heal so an after_doing `git push` advancing `origin/main` cannot recompute a correct base to `HEAD` and empty the snapshot. `readFinalizerEnv` now reports the trust marker.
+
+### Fixed — never drop committed task work from the snapshot (D137)
+
+- **`extensions/hook-bridge/changed-files.ts`** — `captureChangedFiles` overrides the W1529 dirty-baseline exclusion for any path in the `base..HEAD` committed range: committed range = task work, by definition.
+
+### Testing
+
+`npm test` (`node --test`) grows from 195 to 213 tests, all passing. New coverage: `resolveSnapshotBase` unit tests over a two-clone bare-origin cross-pull fixture (recompute for older/empty/unresolvable/non-ancestor, passthrough for trusted / branch-point-equal / no-origin, and the loud stderr notice), the committed-range override (D137), the `base=` round-trip, `readFinalizerEnv` trust-marker parsing, the inverted `resolveClaimEnvCache` + `resolveFinalizeBeforeDoingEnv`, and two `finalizeAfterDoing` integration tests (two-clone cross-pull excludes the other clone's pulled file and records the trusted post-pull base; push-in-after_doing reuses the persisted base so the refresh does not empty the snapshot). The new tests reference `resolveSnapshotBase` (absent pre-fix), so they fail by construction against the old code.
+
+### Backward compatibility
+
+Backward-compatible and additive. The `TASK_BASE_REF_TRUSTED` cache key and the `base=` state line are tolerated when absent (an inherited cache simply gets the full trust guard; older state files report `base` as `undefined`). No marketplace update — the extension installs via a `github:` ref pin.
+
 ## [1.12.1] - 2026-07-10
 
 changed_files upload reliability fix: ports the two Claude Code hook changes (D127 + W1658) that stop completed review tasks from landing with an empty `changed_files` array. The hook was uploading the per-file diff to the task id from the env cache, which goes stale when the claim response is hidden from the hook — so the diff was PUT to the *previous* task and the current task's `changed_files` stayed empty, silently. This is a **patch** bump (1.12.0 → 1.12.1): no wire shapes change and the upload target resolution is now derived from the authoritative `/complete` URL.

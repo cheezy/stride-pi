@@ -22,6 +22,7 @@ import {
   readDiffUploadState,
   readFinalizerEnv,
   recordDiffUploadState,
+  resolveSnapshotBase,
   selfHealChangedFilesUpload,
   writeClaimDirtyBaseline,
 } from "./changed-files.ts";
@@ -1516,6 +1517,345 @@ describe("captureClaimDirtyBaseline / read-write round-trip (W1529)", () => {
       assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- (D142) Cross-clone base-ref reorder + trust guard + committed-range ---
+
+/**
+ * Build a bare origin plus clone A that has pulled another clone's pushed commit
+ * (so origin/main = the branch point) and then made a local task commit on top.
+ * Mirrors the two-clone bare-origin pull scenario of the reference bash Test
+ * Group 21. Returns the notable commits.
+ */
+function crossPullRepo(): {
+  root: string;
+  cloneA: string;
+  prePull: string;
+  branchPoint: string;
+  taskCommit: string;
+} {
+  const root = mktemp();
+  const origin = path.join(root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"]);
+  const cloneA = path.join(root, "cloneA");
+  execFileSync("git", ["clone", "-q", origin, cloneA]);
+  execFileSync("git", ["-C", cloneA, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", cloneA, "config", "user.name", "Test"]);
+  execFileSync("git", ["-C", cloneA, "config", "commit.gpgsign", "false"]);
+  execFileSync("git", ["-C", cloneA, "checkout", "-q", "-b", "main"]);
+  fs.writeFileSync(path.join(cloneA, "base.txt"), "base\n");
+  execFileSync("git", ["-C", cloneA, "add", "base.txt"]);
+  execFileSync("git", ["-C", cloneA, "commit", "-q", "-m", "base"]);
+  execFileSync("git", ["-C", cloneA, "push", "-q", "origin", "main"]);
+  const prePull = execFileSync("git", ["-C", cloneA, "rev-parse", "HEAD"], {
+    encoding: "utf-8",
+  }).trim();
+  // Clone B pushes another commit.
+  const cloneB = path.join(root, "cloneB");
+  execFileSync("git", ["clone", "-q", origin, cloneB]);
+  execFileSync("git", ["-C", cloneB, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", cloneB, "config", "user.name", "Test"]);
+  execFileSync("git", ["-C", cloneB, "config", "commit.gpgsign", "false"]);
+  fs.writeFileSync(path.join(cloneB, "w1678.txt"), "other\n");
+  execFileSync("git", ["-C", cloneB, "add", "w1678.txt"]);
+  execFileSync("git", ["-C", cloneB, "commit", "-q", "-m", "other"]);
+  execFileSync("git", ["-C", cloneB, "push", "-q", "origin", "main"]);
+  // Clone A pulls (the before_doing pull), then makes a local task commit.
+  execFileSync("git", ["-C", cloneA, "pull", "-q", "origin", "main"]);
+  const branchPoint = execFileSync("git", ["-C", cloneA, "rev-parse", "HEAD"], {
+    encoding: "utf-8",
+  }).trim();
+  fs.writeFileSync(path.join(cloneA, "task.txt"), "task\n");
+  execFileSync("git", ["-C", cloneA, "add", "task.txt"]);
+  execFileSync("git", ["-C", cloneA, "commit", "-q", "-m", "task"]);
+  const taskCommit = execFileSync("git", ["-C", cloneA, "rev-parse", "HEAD"], {
+    encoding: "utf-8",
+  }).trim();
+  return { root, cloneA, prePull, branchPoint, taskCommit };
+}
+
+describe("resolveSnapshotBase — D142 trust guard", () => {
+  it("recomputes an inherited base older than the branch point to the branch point", () => {
+    const { root, cloneA, prePull, branchPoint } = crossPullRepo();
+    const err = mock.method(console, "error", () => {});
+    try {
+      // prePull is an ancestor of HEAD (a plain is-ancestor check would trust
+      // it — the exact D132 stale base) but predates the branch point.
+      assert.equal(resolveSnapshotBase(prePull, cloneA, false), branchPoint);
+    } finally {
+      err.mock.restore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes a TRUSTED base through unchanged (no branch-point second-guessing)", () => {
+    const { root, cloneA, prePull } = crossPullRepo();
+    try {
+      assert.equal(resolveSnapshotBase(prePull, cloneA, true), prePull);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes a base equal to the branch point through unchanged", () => {
+    const { root, cloneA, branchPoint } = crossPullRepo();
+    try {
+      assert.equal(resolveSnapshotBase(branchPoint, cloneA, false), branchPoint);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recomputes an empty base to the branch point", () => {
+    const { root, cloneA, branchPoint } = crossPullRepo();
+    const err = mock.method(console, "error", () => {});
+    try {
+      assert.equal(resolveSnapshotBase("", cloneA, false), branchPoint);
+    } finally {
+      err.mock.restore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recomputes an unresolvable base to the branch point", () => {
+    const { root, cloneA, branchPoint } = crossPullRepo();
+    const err = mock.method(console, "error", () => {});
+    try {
+      assert.equal(
+        resolveSnapshotBase("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", cloneA, false),
+        branchPoint,
+      );
+    } finally {
+      err.mock.restore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recomputes a base that is not an ancestor of HEAD to the branch point", () => {
+    const { root, cloneA, branchPoint } = crossPullRepo();
+    const err = mock.method(console, "error", () => {});
+    try {
+      // A commit on a divergent side branch: resolvable, but not an ancestor of
+      // HEAD (e.g. a base rebased away).
+      execFileSync("git", ["-C", cloneA, "checkout", "-q", "-b", "side"]);
+      fs.writeFileSync(path.join(cloneA, "side.txt"), "side\n");
+      execFileSync("git", ["-C", cloneA, "add", "side.txt"]);
+      execFileSync("git", ["-C", cloneA, "commit", "-q", "-m", "side"]);
+      const sideCommit = execFileSync("git", ["-C", cloneA, "rev-parse", "HEAD"], {
+        encoding: "utf-8",
+      }).trim();
+      execFileSync("git", ["-C", cloneA, "checkout", "-q", "main"]);
+      assert.equal(resolveSnapshotBase(sideCommit, cloneA, false), branchPoint);
+    } finally {
+      err.mock.restore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("announces a recompute loudly on stderr", () => {
+    const { root, cloneA, prePull } = crossPullRepo();
+    const err = mock.method(console, "error", () => {});
+    try {
+      resolveSnapshotBase(prePull, cloneA, false);
+      assert.equal(err.mock.callCount(), 1);
+      assert.match(
+        String(err.mock.calls[0].arguments[0]),
+        /recomputed the snapshot base from the task branch point/,
+      );
+    } finally {
+      err.mock.restore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the base through unchanged when the repo has NO origin", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      gitCommit(dir, "only");
+      const bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+      assert.equal(resolveSnapshotBase(bogus, dir, false), bogus);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the base through unchanged in a non-git directory", () => {
+    const dir = mktemp();
+    try {
+      assert.equal(resolveSnapshotBase("somebase", dir, false), "somebase");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("captureChangedFiles — D142 committed-range override (D137)", () => {
+  it("keeps a claim-dirty file whose committed content still matches the claim-time hash", () => {
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "lib_a.txt"), "v1\n");
+      fs.writeFileSync(path.join(dir, "lib_b.txt"), "v1\n");
+      const base = gitCommit(dir, "base");
+      // Task work already present when the claim lands (dirty at claim time).
+      fs.writeFileSync(path.join(dir, "lib_a.txt"), "v2\n");
+      fs.writeFileSync(path.join(dir, "lib_b.txt"), "v2\n");
+      fs.writeFileSync(path.join(dir, "migration.ts"), "export const m = 1;\n");
+      // Record the dirty baseline over the CURRENT (pre-commit) tree.
+      writeClaimDirtyBaseline(dir, captureClaimDirtyBaseline(dir));
+      // The after_doing auto-commit commits it all as the task's work.
+      execFileSync("git", ["-C", dir, "add", "-A"]);
+      execFileSync("git", ["-C", dir, "commit", "-q", "-m", "task"]);
+
+      const paths = captureChangedFiles(base, dir).map((c) => c.path).sort();
+      // Without the committed-range override the baseline would drop all three
+      // (their committed content matches the claim-time hash).
+      assert.deepEqual(paths, ["lib_a.txt", "lib_b.txt", "migration.ts"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("recordDiffUploadState / readDiffUploadState — D142 base persistence", () => {
+  it("persists and round-trips the resolved snapshot base", () => {
+    const dir = mktemp();
+    try {
+      recordDiffUploadState(dir, "42", 200, "abc123def456");
+      const state = readDiffUploadState(dir);
+      assert.equal(state.taskId, "42");
+      assert.equal(state.httpCode, "200");
+      assert.equal(state.base, "abc123def456");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the base line and reports base undefined when no base is given (back-compat)", () => {
+    const dir = mktemp();
+    try {
+      recordDiffUploadState(dir, "42", 200);
+      const raw = fs.readFileSync(path.join(dir, DIFF_UPLOAD_STATE_FILE), "utf-8");
+      assert.equal(raw, "task_id=42\nhttp_code=200\n");
+      assert.equal(readDiffUploadState(dir).base, undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readFinalizerEnv — D142 trust marker", () => {
+  it("reports trusted=true when TASK_BASE_REF_TRUSTED='1' is cached", () => {
+    const dir = mktemp();
+    try {
+      fs.writeFileSync(
+        path.join(dir, ".stride-env-cache"),
+        "TASK_ID='42'\nTASK_BASE_REF='abc'\nTASK_BASE_REF_TRUSTED='1'\n",
+      );
+      const env = readFinalizerEnv(dir);
+      assert.equal(env.taskId, "42");
+      assert.equal(env.baseRef, "abc");
+      assert.equal(env.trusted, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports trusted=false when the marker is absent", () => {
+    const dir = mktemp();
+    try {
+      fs.writeFileSync(
+        path.join(dir, ".stride-env-cache"),
+        "TASK_ID='42'\nTASK_BASE_REF='abc'\n",
+      );
+      assert.equal(readFinalizerEnv(dir).trusted, false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("finalizeAfterDoing — D142 cross-clone + push safeguards (fetch mocked)", () => {
+  let stub: FetchStub | null = null;
+  afterEach(() => {
+    if (stub) {
+      stub.restore();
+      stub = null;
+    }
+  });
+
+  it("two-clone cross-pull: the snapshot excludes the other clone's pulled file and records the trusted post-pull base", async () => {
+    const { root, cloneA, branchPoint } = crossPullRepo();
+    try {
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const command = `curl -X PATCH "https://api.example.com/api/tasks/W99/complete" -H "Authorization: Bearer tok"`;
+      // The post-before_doing capture would have written the post-pull branch
+      // point as a TRUSTED base; the diff must span only clone A's task commit.
+      await finalizeAfterDoing({
+        cwd: cloneA,
+        command,
+        taskId: "W99",
+        baseRef: branchPoint,
+        trusted: true,
+      });
+      const paths = JSON.parse(
+        fs.readFileSync(path.join(cloneA, ".stride-changed-files.json"), "utf-8"),
+      ).map((c: { path: string }) => c.path);
+      assert.ok(paths.includes("task.txt"));
+      assert.ok(!paths.includes("w1678.txt"));
+      assert.equal(readDiffUploadState(cloneA).base, branchPoint);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("push-in-after_doing: reuses the persisted pre-push base so the refresh does not empty the snapshot", async () => {
+    const root = mktemp();
+    try {
+      const origin = path.join(root, "origin.git");
+      execFileSync("git", ["init", "-q", "--bare", origin]);
+      execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"]);
+      const work = path.join(root, "work");
+      execFileSync("git", ["clone", "-q", origin, work]);
+      execFileSync("git", ["-C", work, "config", "user.email", "test@example.com"]);
+      execFileSync("git", ["-C", work, "config", "user.name", "Test"]);
+      execFileSync("git", ["-C", work, "config", "commit.gpgsign", "false"]);
+      execFileSync("git", ["-C", work, "checkout", "-q", "-b", "main"]);
+      fs.writeFileSync(path.join(work, "tracked.txt"), "v1\n");
+      execFileSync("git", ["-C", work, "add", "tracked.txt"]);
+      execFileSync("git", ["-C", work, "commit", "-q", "-m", "v1"]);
+      execFileSync("git", ["-C", work, "push", "-q", "origin", "main"]);
+      const base = execFileSync("git", ["-C", work, "rev-parse", "HEAD"], {
+        encoding: "utf-8",
+      }).trim();
+      // Task work committed locally.
+      fs.writeFileSync(path.join(work, "tracked.txt"), "v2\n");
+      execFileSync("git", ["-C", work, "add", "tracked.txt"]);
+      execFileSync("git", ["-C", work, "commit", "-q", "-m", "task work"]);
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const command = `curl -X PATCH "https://api.example.com/api/tasks/W55/complete" -H "Authorization: Bearer tok"`;
+      // Early pre-gate capture: untrusted base, origin/main still at v1 == base,
+      // so the guard passes it through and persists it.
+      await finalizeAfterDoing({ cwd: work, command, taskId: "W55", baseRef: base, trusted: false });
+      assert.equal(readDiffUploadState(work).base, base);
+      // The after_doing section pushes, advancing origin/main to HEAD.
+      execFileSync("git", ["-C", work, "push", "-q", "origin", "main"]);
+      // The post-gate refresh must REUSE the persisted base (not re-resolve
+      // against the moved origin/main, which would recompute to HEAD and empty
+      // the snapshot).
+      await finalizeAfterDoing({ cwd: work, command, taskId: "W55", baseRef: base, trusted: false });
+      const paths = JSON.parse(
+        fs.readFileSync(path.join(work, ".stride-changed-files.json"), "utf-8"),
+      ).map((c: { path: string }) => c.path);
+      assert.ok(paths.includes("tracked.txt"));
+      assert.equal(readDiffUploadState(work).base, base);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

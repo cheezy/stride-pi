@@ -104,6 +104,87 @@ function resolveBase(baseRef: string, cwd: string): string | null {
   return null;
 }
 
+/**
+ * (D142) Trust guard for the snapshot base ref. `TASK_BASE_REF` is supposed to
+ * be the task branch point — the commit HEAD pointed at right after the
+ * `## before_doing` section finished (post-pull). A value inherited from a
+ * previous task or session can predate commits that arrived via the before_doing
+ * pull; diffing from it would span ANOTHER clone's completed task (the
+ * D132/W1678 incident). Rules, in order:
+ *   1. empty or unresolvable base                → recompute from the branch point
+ *   2. base is not an ancestor of HEAD           → recompute (e.g. rebased away)
+ *   3. base is a STRICT ancestor of the task branch point (unmarked only) →
+ *      recompute — the range base..HEAD would include commits pulled from
+ *      origin. A plain is-ancestor-of-HEAD check cannot catch this: the D132
+ *      stale base WAS an ancestor of HEAD.
+ * "Task branch point" = merge-base of HEAD and the origin default branch. With
+ * no origin branch there is no branch point to judge against (and no cross-clone
+ * pull is possible), so the base passes through unchanged and captureChangedFiles
+ * keeps its own HEAD~1 fallback. Rule 3 is gated on `trusted`: a base THIS
+ * claim's post-before_doing capture wrote is the branch point by construction
+ * (origin/main may legitimately have advanced past it when the workflow pushes
+ * its own task commits before completing), so a marked base skips rule 3.
+ * Recomputes are announced on stderr — never silently. Returns the base to use.
+ */
+export function resolveSnapshotBase(
+  baseRef: string,
+  cwd: string,
+  trusted: boolean,
+): string {
+  if (!hasGit()) return baseRef;
+  if (!runGit(["rev-parse", "--verify", "--quiet", "HEAD"], cwd).ok) {
+    return baseRef;
+  }
+  let remoteHead = runGitAllowFail(
+    ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    cwd,
+  ).trim();
+  if (remoteHead.startsWith("refs/remotes/")) {
+    remoteHead = remoteHead.slice("refs/remotes/".length);
+  }
+  if (!remoteHead) {
+    for (const cand of ["origin/main", "origin/master"]) {
+      if (runGit(["rev-parse", "--verify", "--quiet", cand], cwd).ok) {
+        remoteHead = cand;
+        break;
+      }
+    }
+  }
+  if (!remoteHead) return baseRef;
+  const branchPoint = runGitAllowFail(
+    ["merge-base", "HEAD", remoteHead],
+    cwd,
+  ).trim();
+  if (!branchPoint) return baseRef;
+
+  let reason = "";
+  let baseSha = "";
+  if (baseRef) {
+    baseSha = runGitAllowFail(
+      ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`],
+      cwd,
+    ).trim();
+  }
+  if (!baseRef || !baseSha) {
+    reason = "empty or unresolvable";
+  } else if (!runGit(["merge-base", "--is-ancestor", baseSha, "HEAD"], cwd).ok) {
+    reason = "not an ancestor of HEAD";
+  } else if (
+    !trusted &&
+    baseSha !== branchPoint &&
+    runGit(["merge-base", "--is-ancestor", baseSha, branchPoint], cwd).ok
+  ) {
+    reason =
+      "older than the task branch point, so the diff would span commits pulled from origin";
+  }
+  if (!reason) return baseRef;
+
+  console.error(
+    `stride-hook: TASK_BASE_REF ${baseRef || "<empty>"} is not trustworthy (${reason}); recomputed the snapshot base from the task branch point: ${branchPoint}`,
+  );
+  return branchPoint;
+}
+
 function truncateDiff(diff: string): string {
   if (!diff) return diff;
   const lines = diff.split("\n");
@@ -187,12 +268,24 @@ export function captureChangedFiles(baseRef: string, cwd: string): ChangedFile[]
   // an un-hashable path keeps the file, preserving the prior capture-everything
   // behavior.
   const claimDirtyBaseline = readClaimDirtyBaseline(cwd);
+  // (D142) Paths that differ between base and HEAD are COMMITTED task work — the
+  // task's auto-commit contains them, so the dirty-baseline filter below must
+  // never drop them. D137 silently lost tracked edits and an untracked migration
+  // exactly this way: they were dirty at claim time, the auto-commit committed
+  // that same content, and the unchanged-since-claim blob hash then excluded them
+  // from the snapshot. Committed range = task work, by definition.
+  const committedRange = new Set(
+    runGitAllowFail(["diff", "--name-only", base, "HEAD"], cwd)
+      .split("\n")
+      .filter((line) => line.length > 0),
+  );
   const files =
     Object.keys(claimDirtyBaseline).length === 0
       ? allFiles
       : allFiles.filter((file) => {
           const claimHash = claimDirtyBaseline[file];
           if (claimHash === undefined) return true; // clean at claim → keep
+          if (committedRange.has(file)) return true; // (D142) committed = task work
           const currentHash = hashWorkingTreeFile(file, cwd);
           if (currentHash === undefined) return true; // un-hashable → fail-open keep
           return currentHash !== claimHash; // keep only if changed since claim
@@ -417,11 +510,17 @@ export function recordDiffUploadState(
   cwd: string,
   taskId: string,
   httpCode: number,
+  base?: string,
 ): void {
   try {
+    // (D142) The trust-guard-resolved snapshot base rides along (a commit SHA
+    // only — never a URL or token) so the before_review self-heal reuses the
+    // after_doing-time judgment instead of re-resolving against origin refs the
+    // section's own `git push` may have moved.
+    const baseLine = base ? `base=${base}\n` : "";
     fs.writeFileSync(
       path.join(cwd, DIFF_UPLOAD_STATE_FILE),
-      `task_id=${taskId}\nhttp_code=${httpCode}\n`,
+      `task_id=${taskId}\nhttp_code=${httpCode}\n${baseLine}`,
       { encoding: "utf-8", mode: 0o600 },
     );
   } catch {
@@ -438,19 +537,23 @@ export function recordDiffUploadState(
 export function readDiffUploadState(cwd: string): {
   taskId: string | undefined;
   httpCode: string | undefined;
+  base: string | undefined;
 } {
   const file = path.join(cwd, DIFF_UPLOAD_STATE_FILE);
-  if (!fs.existsSync(file)) return { taskId: undefined, httpCode: undefined };
+  if (!fs.existsSync(file)) {
+    return { taskId: undefined, httpCode: undefined, base: undefined };
+  }
 
   let text: string;
   try {
     text = fs.readFileSync(file, "utf-8");
   } catch {
-    return { taskId: undefined, httpCode: undefined };
+    return { taskId: undefined, httpCode: undefined, base: undefined };
   }
 
   let taskId: string | undefined;
   let httpCode: string | undefined;
+  let base: string | undefined;
   for (const line of text.split("\n")) {
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
@@ -458,8 +561,9 @@ export function readDiffUploadState(cwd: string): {
     const value = line.slice(eq + 1);
     if (key === "task_id") taskId = value;
     else if (key === "http_code") httpCode = value;
+    else if (key === "base") base = value; // (D142) resolved snapshot base
   }
-  return { taskId, httpCode };
+  return { taskId, httpCode, base };
 }
 
 export interface FinalizeOptions {
@@ -467,6 +571,32 @@ export interface FinalizeOptions {
   command: string;
   taskId: string | undefined;
   baseRef: string | undefined;
+  /** (D142) Whether TASK_BASE_REF carries the TASK_BASE_REF_TRUSTED marker — a
+   * base this claim's post-before_doing capture wrote, exempt from the trust
+   * guard's branch-point rule. */
+  trusted?: boolean;
+}
+
+/**
+ * (D142) Resolve the snapshot base for a finalize/self-heal pass, reusing the
+ * judgment already persisted for THIS task when present. The early after_doing
+ * capture resolves the base against the PRE-push origin refs and records it; a
+ * later refresh (or the before_review self-heal) must reuse that value rather
+ * than re-resolving against origin refs the section's own `git push` may have
+ * moved (a correct base would look stale and recompute to HEAD, emptying the
+ * snapshot). Falls back to a fresh trust-guard resolution only when no persisted
+ * base exists for this task (e.g. the very first capture, or a host restart
+ * before any PUT recorded one).
+ */
+function resolveWindowBase(
+  opts: FinalizeOptions,
+  targetId: string,
+  state: { taskId: string | undefined; base: string | undefined },
+): string {
+  if (state.taskId === targetId && state.base !== undefined) {
+    return state.base;
+  }
+  return resolveSnapshotBase(opts.baseRef ?? "", opts.cwd, opts.trusted ?? false);
 }
 
 /**
@@ -482,26 +612,32 @@ export interface FinalizeOptions {
  */
 export async function finalizeAfterDoing(opts: FinalizeOptions): Promise<void> {
   const { cwd, command } = opts;
+
+  // Target the upload by the /complete URL id (D127); the env-cache TASK_ID is
+  // only a fallback for the claim path, whose URL carries no id. This removes
+  // the dependency on the claim having seeded the cache with the correct id.
+  const targetId = taskIdFromCommand(command) || opts.taskId;
+
+  // (D142) Resolve the snapshot base through the trust guard once per task
+  // window — the early pre-gate capture records it, later refreshes reuse it.
+  const snapBase = resolveWindowBase(opts, targetId ?? "", readDiffUploadState(cwd));
+
   let snapshot: ChangedFile[] = [];
   try {
-    snapshot = captureChangedFiles(opts.baseRef ?? "", cwd);
+    snapshot = captureChangedFiles(snapBase, cwd);
   } catch {
     snapshot = [];
   }
 
   writeSnapshot(cwd, snapshot);
 
-  // Target the upload by the /complete URL id (D127); the env-cache TASK_ID is
-  // only a fallback for the claim path, whose URL carries no id. This removes
-  // the dependency on the claim having seeded the cache with the correct id.
-  const targetId = taskIdFromCommand(command) || opts.taskId;
   if (!targetId) return;
   const apiBase = extractApiBase(command);
   const token = extractToken(command);
   if (!apiBase || !token) return;
 
   const code = await putChangedFiles(apiBase, token, targetId, snapshot);
-  recordDiffUploadState(cwd, targetId, code);
+  recordDiffUploadState(cwd, targetId, code, snapBase);
 }
 
 /**
@@ -544,9 +680,15 @@ export async function selfHealChangedFilesUpload(
   const token = extractToken(command);
   if (!apiBase || !token) return;
 
+  // (D142) Reuse the base finalizeAfterDoing resolved and persisted for THIS
+  // task; only re-resolve fresh when no persisted judgment exists (process
+  // killed before any PUT). Re-resolving unconditionally here would re-judge
+  // against origin refs the after_doing section's own `git push` may have moved.
+  const snapBase = resolveWindowBase(opts, targetId, state);
+
   let snapshot: ChangedFile[] = [];
   try {
-    snapshot = captureChangedFiles(opts.baseRef ?? "", cwd);
+    snapshot = captureChangedFiles(snapBase, cwd);
   } catch {
     snapshot = [];
   }
@@ -554,7 +696,7 @@ export async function selfHealChangedFilesUpload(
   writeSnapshot(cwd, snapshot);
 
   const code = await putChangedFiles(apiBase, token, targetId, snapshot);
-  recordDiffUploadState(cwd, targetId, code);
+  recordDiffUploadState(cwd, targetId, code, snapBase);
 
   // W1658: fail loud on a terminal upload failure. The before_review self-heal
   // is the LAST retry, so a non-2xx here means the diff is definitively lost for
@@ -589,25 +731,32 @@ const ENV_CACHE_FILE = ".stride-env-cache";
 export function readFinalizerEnv(cwd: string): {
   taskId: string | undefined;
   baseRef: string | undefined;
+  trusted: boolean;
 } {
   const file = path.join(cwd, ENV_CACHE_FILE);
-  if (!fs.existsSync(file)) return { taskId: undefined, baseRef: undefined };
+  if (!fs.existsSync(file)) {
+    return { taskId: undefined, baseRef: undefined, trusted: false };
+  }
 
   let text: string;
   try {
     text = fs.readFileSync(file, "utf-8");
   } catch {
-    return { taskId: undefined, baseRef: undefined };
+    return { taskId: undefined, baseRef: undefined, trusted: false };
   }
 
   let taskId: string | undefined;
   let baseRef: string | undefined;
+  let trusted = false;
   for (const line of text.split("\n")) {
     const match = line.match(/^([A-Z_][A-Z0-9_]*)='((?:[^'\\]|\\.)*)'$/);
     if (!match) continue;
     const value = match[2].replace(/\\(.)/g, "$1");
     if (match[1] === "TASK_ID") taskId = value;
     else if (match[1] === "TASK_BASE_REF") baseRef = value;
+    // (D142) TASK_BASE_REF_TRUSTED marks a base this claim's post-before_doing
+    // capture wrote — exempt from resolveSnapshotBase's branch-point rule.
+    else if (match[1] === "TASK_BASE_REF_TRUSTED") trusted = value === "1";
   }
-  return { taskId, baseRef };
+  return { taskId, baseRef, trusted };
 }
