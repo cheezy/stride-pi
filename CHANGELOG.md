@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — every documented create payload carries a top-level `agent_name` (W1694)
+
+Ports the canonical `stride` plugin's W1684 change (released as `stride` v1.37.0) into the Pi extension. `stride-creating-tasks`, `stride-creating-goals`, and **both** decomposer docs — `skills/stride-task-decomposer/SKILL.md` and `extensions/subagent-dispatch/agents/stride-task-decomposer.md`, which carry the contract in parallel — now document a top-level `agent_name` on every create request: beside the `task` root key for `POST /api/tasks` and beside the `goals` root key for `POST /api/tasks/batch`, set to the exact same plain agent name the extension already sends as `agent_name` on claim and complete (`"Pi"`, never the `ai_agent:<model>` token form).
+
+Per-task `created_by_agent` is forgotten in practice and cannot be backfilled (`PATCH` rejects it), so tasks lost their attribution permanently and the `/agents` feed rendered them with a `?` avatar. The root-level param is the always-sent fallback that kanban D137 teaches the server to read. Both creation skills gain the full five-step server resolution order (explicit `created_by_agent` → token `ai_agent:<model>` → top-level `agent_name` → token's last agent name → unset), an `agent_name` row in their field tables, and an explicit note that `agent_name` is display metadata only — never an authorization signal.
+
+**Scope note:** documentation-only. The extension's TypeScript builds no create payload — the hook bridge handles curl matching, `changed_files` capture/PUT, and the `after_goal` PATCH, while the agent itself issues the create request. A repo-wide grep confirms no `POST /api/tasks` call and no `agent_name` reference in any non-test `.ts`, so there is no builder to update. `skills/stride-workflow/SKILL.md` was likewise checked and left unchanged: it references the create endpoints in prose only and embeds no payload shape.
+
+### Fixed — `stride-creating-tasks` documented the single-create body without its `task` root key
+
+The skill's complete example was a bare task object, but `POST /api/tasks` requires a `{"task": {...}}` envelope and returns `422 Missing 'task' key` without it. Surfaced while placing `agent_name` "beside the task root key" — the key it had to sit beside was never documented. A new Request Envelope section shows the wrapper with `agent_name` as its top-level sibling, and the Quick Reference heading now names the block as the value of the `task` key rather than the request body; the single-goal format in both decomposer docs is corrected the same way. The extension inherited this defect from the canonical plugin, where W1684 fixed it.
+
+### Testing
+
+Documentation-only; no `.ts` file changed and the `node --test` suite is untouched. Verified by the task's grep sweeps: both creation skills document the top-level `agent_name`, both decomposer docs carry it symmetrically, every literal create and batch payload in the repo carries it, and every non-illustrative `json` fence across the four changed docs parses as valid JSON.
+
+### Backward compatibility
+
+Fully backward compatible, and safe to ship ahead of the server. No `.ts`, hook, `.stride.md`, env-var, or `.stride_auth.md` change. Unknown top-level keys are ignored by older servers, so sending `agent_name` before kanban D137 reaches production is a no-op. `created_by_agent` guidance is unchanged and still highest precedence — the new param is a fallback, never a replacement.
+
+### Source
+
+W1694 — mirrors the canonical `stride` plugin's W1684 (`stride` v1.37.0) and the `stride-codex` (v1.25.0), `stride-copilot` (v2.26.0), `stride-gemini` (v1.36.0), and `stride-opencode` (v1.28.0) ports. Kanban D137 ships the server half. No release is cut here: W1695 owns the `package.json` version bump, tag, and GitHub release.
+
 ## [1.13.0] - 2026-07-14
 
 Ports all three of the canonical `stride` plugin's D142 base-ref / snapshot fixes (released as `stride` v1.36.0) into the Pi hook bridge. `TASK_BASE_REF` was captured at claim time — in the `tool_result` before_doing branch, **before** `runHook` executed the `## before_doing` section's `git pull` — so the after_doing `changed_files` diff spanned commits pulled from **another clone** (the D132/W1678 incident), and the W1529 dirty-baseline filter silently dropped committed task work (D137). This is a **minor** bump (1.12.1 → 1.13.0): additive trust-guard + reorder, no wire-shape changes. Per the ADR-002 structural constraint, all new logic lives in the pure, unit-tested modules (`env-cache.ts`, `changed-files.ts`); `index.ts` only wires them.
