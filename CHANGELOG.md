@@ -5,6 +5,24 @@ All notable changes to the Stride extension for Pi Coding Agent will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Release record — tags without a GitHub release
+
+*This is a record-keeping note, not a release. It describes no change to this plugin and carries no version.*
+
+A fleet-wide audit found **3 tags** in this repository that are tagged and pushed but have no corresponding GitHub release. **The gap is accepted and will not be backfilled.** It is recorded here so the next release engineer does not rediscover and re-litigate it:
+
+- `v0.2.0` — 2026-05-08
+- `v0.3.0` — 2026-05-17
+- `v0.4.0` — 2026-05-19
+
+Why accepted rather than backfilled:
+
+- **Nothing resolved through these releases.** A GitHub release is a human-readable record, not a resolution mechanism — nothing installs *through* one. The missing releases cost nothing at the time and cost nothing now.
+- **Backfilling would be worse than the gap.** A release created today against a commit from April or May would be dated today, and would manufacture a record for a state no user ever resolved through — misrepresenting the very history it claims to document.
+- **The convention itself is unchanged.** These are omissions from a few release cycles, not a policy shift. Every tag still gets a release going forward.
+
+The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
+
 ## [Unreleased]
 
 ## [1.15.0] - 2026-07-28
