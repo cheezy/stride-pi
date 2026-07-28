@@ -219,6 +219,7 @@ The reviewer returns "Approved" or a list of issues (Critical, Important, Minor)
 - [ ] Each item in `pitfalls` -- did you avoid it?
 - [ ] `patterns_to_follow` -- does your code match?
 - [ ] `testing_strategy` -- did you write the specified tests?
+- [ ] `behaviour_test_matrix` -- if the task supplied one (it is optional, so many tasks will not): does every row's named test exist, and does each row's `status` reflect reality?
 
 Either way, the reviewer emits a one-line prose summary, the per-severity issue list, an acceptance-criteria table, and a fenced ```json block. **Save the reviewer's full response (prose + JSON block) verbatim** -- it becomes `review_report` in Step 7.
 
