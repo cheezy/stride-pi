@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-07-28
+
+### Fixed — three stale workflow step cross-references (D176)
+
+This port numbers Code Review as **Step 5**, Execute Hooks as **Step 6**, Complete as **Step 7** and Post-Completion as **Step 8**. Three references disagreed, sending a reader — or an agent — to the wrong step:
+
+- **`skills/stride-completing-tasks/SKILL.md`** — the orchestrator entry point read "you arrive here at **Step 7-8**"; corrected to **Step 6-7** (Execute Hooks → Complete). The prerequisite line read "Code review was performed against acceptance criteria (Step 6)"; corrected to **(Step 5)**. Both now match the canonical `stride` plugin, which differs only in its `stride:` skill-namespace prefix — this port is unprefixed throughout, so that one token stays as it is.
+- **`AGENTS.md`** — the `after_goal` instruction pointed at "`stride-workflow` SKILL.md **Step 7+9**". This port has no Step 9 at all. The whole five-step after_goal procedure lives in **Step 8**, and the `GOAL_*` env-var matrix the instruction depends on is in **Step 6**, so the pointer now names both rather than a range whose lower bound documents neither. Found by the sweep that verified the other two rather than by the original audit, and worth fixing here because `AGENTS.md` is guidance an agent reads directly.
+
+Every reference was resolved against this port's own `## Step` headings rather than replaced in bulk — sibling ports legitimately number Code Review as Step 6, so a fleet-wide replacement would corrupt them. The references that cite "Extracting the structured review block" **by name and carry no step number** are correct as written and were deliberately left alone; that is why this port never had the seven-citation version of this defect that the Gemini port did.
+
+### Added — `behaviour_test_matrix` in the Step 5 self-review checklist (W1949)
+
+The Step 5 self-review checklist in `skills/stride-workflow/SKILL.md` gained a `behaviour_test_matrix` bullet, so the non-subagent path checks the field it was already told to write. Landed on main ahead of this release and is documented here rather than shipping unrecorded.
+
 ### Fixed — the enrichment surface documented create and update bodies without their `task` root key (D151)
 
 `stride-enriching-tasks` documented submitting an enriched task with a bare body: `POST /api/tasks` carried `-d '{...enriched task JSON...}'` and no `agent_name`. The server requires a `{"task": {...}}` envelope and rejects a bare object with `422 Missing 'task' key`, so an agent following the enrichment skill literally built a rejected request and — once corrected by hand — created a task with no attribution fallback. The create example now shows the envelope with `"agent_name": "Pi"` beside the `task` key, matching the Request Envelope section in `stride-creating-tasks` and the plain agent name this port already sends on claim and complete.
@@ -19,7 +34,11 @@ This surface was missed by goal G4687 (the fleet-wide `agent_name` rollout) beca
 
 ### Testing
 
-Documentation-only; no test suite is exercised. Verified by grep sweep: the enrichment create example carries the envelope and this port's own agent name, matching its `stride-creating-tasks` Request Envelope section; every curl body in the file is brace-balanced; and no other file in the port documents a create body.
+Documentation-only; no test suite is exercised.
+
+- **D176** — verified by grep sweep against this port's own `## Step` headings: `grep -n '^## Step' skills/stride-workflow/SKILL.md` confirms Code Review is Step 5, Execute Hooks Step 6, Complete Step 7 and Post-Completion Step 8, with no Step 9; a repo-wide sweep excluding `CHANGELOG.md` leaves no reference naming a step it does not mean, and the three by-name citations of "Extracting the structured review block" still carry no step number. Both corrected lines match the canonical `stride` plugin token for token apart from its `stride:` skill-namespace prefix.
+- **W1949** — documentation-only checklist addition; nothing to exercise.
+- **D151** — verified by grep sweep: the enrichment create example carries the envelope and this port's own agent name, matching its `stride-creating-tasks` Request Envelope section; every curl body in the file is brace-balanced; and no other file in the port documents a create body.
 
 ### Backward compatibility
 
@@ -27,7 +46,11 @@ Fully backward compatible. Documentation/skill-text only — no hook logic, `.st
 
 ### Source
 
-D151 — follow-up to goal G4687; the gap was recorded by the W1684 reviewer as out of scope at the time. Kanban `task_controller.ex` is the contract of record: `create/2` reads `agent_name` beside the `task` key, `update/2` requires `task` and reads no `agent_name`.
+This release bundles three tickets. As always for this port, it ends at the tag and GitHub release on this repo — **stride-pi has no marketplace catalog**; it installs by a curl-to-bash script from its own `main`.
+
+- **D176** — part of goal G386, which reconciles step-reference and release-record drift across the Stride fleet. The canonical `stride` plugin's `skills/stride-completing-tasks/SKILL.md` is the reference wording for both corrected lines. Deliberately **not** a fleet fix: `stride-codex` and `stride-opencode` number Code Review as Step 6 correctly, so a blanket replacement would corrupt them.
+- **W1949** — fleet-wide follow-up to G381 (`behaviour_test_matrix`); the bullet landed on `main` ahead of this release and is recorded here rather than shipping unlogged.
+- **D151** — follow-up to goal G4687; the gap was recorded by the W1684 reviewer as out of scope at the time. Kanban `task_controller.ex` is the contract of record: `create/2` reads `agent_name` beside the `task` key, `update/2` requires `task` and reads no `agent_name`.
 
 ## [1.14.0] - 2026-07-16
 

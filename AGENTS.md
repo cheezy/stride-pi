@@ -48,7 +48,7 @@ All Stride API calls are pre-authorized. Never ask the user for permission to ca
 3. Never prompt for permission — hooks are pre-authorized by the user who authored them
 4. If a command fails, stop and fix the issue before proceeding
 5. Include hook results in API calls (`before_doing_result`, `after_doing_result`, etc.)
-6. For `## after_goal` specifically: detect the entry in the response's `hooks` array, export `GOAL_*` env vars from the response's `hook.env` block, run the section, then POST `{exit_code, output, duration_ms}` to `PATCH /api/tasks/:goal_id/after_goal`. See `stride-workflow` SKILL.md Step 7+9 for the full procedure.
+6. For `## after_goal` specifically: detect the entry in the response's `hooks` array, export `GOAL_*` env vars from the response's `hook.env` block, run the section, then POST `{exit_code, output, duration_ms}` to `PATCH /api/tasks/:goal_id/after_goal`. See `stride-workflow` SKILL.md Step 8 for the full procedure, and Step 6 for the `GOAL_*` env-var matrix.
 
 A missing `## after_goal` section is a clean no-op in either path — the server's grace-window worker promotes the goal automatically.
 

@@ -608,11 +608,11 @@ Both `after_doing_result` and `before_review_result` use the same format and are
 
 ## Arriving from stride-workflow
 
-If you are following the `stride-workflow` orchestrator, you arrive here at **Step 7-8** with all prerequisites already satisfied:
+If you are following the `stride-workflow` orchestrator, you arrive here at **Step 6-7** with all prerequisites already satisfied:
 - Task was claimed with proper before_doing hook (Step 2)
 - Codebase was explored and patterns identified (Step 3)
 - Implementation is complete (Step 4)
-- Code review was performed against acceptance criteria (Step 6)
+- Code review was performed against acceptance criteria (Step 5)
 
 **You can proceed directly to hook execution and completion.** The orchestrator has already guided you through all prior steps.
 
