@@ -29,3 +29,4 @@ yarn-error.log*
 .stride-claim-dirty.json
 # Stride runtime dir — holds the canonical API-response file (D118)
 .stride/
+.stride_auth.md
