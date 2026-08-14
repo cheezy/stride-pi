@@ -154,7 +154,7 @@ This gate is **not bypassable** by submitting a self-reported skip (`dispatched:
 ## The Complete Completion Process
 
 1. **Finish your work** - All implementation complete.
-2. **Pre-completion code review** - If medium+ complexity OR 2+ key_files, invoke the `task-reviewer` custom agent. Fix Critical/Important issues. Save output as `review_report`.
+2. **Pre-completion code review** - If the `stride-workflow` Step 3 decision matrix says YES in the **Review** column for this task's row, invoke the `task-reviewer` custom agent. **Read the column; do not re-derive the condition here** (D221). Fix Critical/Important issues. Save output as `review_report`.
 3. **Call `PATCH /api/tasks/:id/complete`** with all required fields, including placeholder `after_doing_result` and `before_review_result`. `hook-bridge` runs `after_doing` on the `tool_call` event (pre-curl) and will veto the request if it fails.
 4. **If `hook-bridge` vetoed the curl** with a blocked-by-after_doing reason: read the failure (failed command + truncated output in the block reason). Fix the issue, then retry the same `/complete` curl — `hook-bridge` re-runs `after_doing` on each attempt.
 5. **Curl succeeded?** `before_review` has already run on the post-curl `tool_result`. If it failed, the failure was logged but the task is already in Review.
@@ -169,7 +169,7 @@ Work Complete
     ↓
 Check decision matrix for code review (if custom agents available)
     ↓
-Medium+ OR 2+ key_files? ─YES→ Invoke task-reviewer custom agent
+Matrix Review column says YES? ─YES→ Invoke task-reviewer custom agent
     ↓ NO (or no custom agent support)     ↓
     ↓                              Issues found? ─YES→ Fix issues
     ↓                                     ↓ NO            ↓
@@ -473,7 +473,7 @@ RIGHT (placeholder — hook-bridge does the real work):
 ## Implementation Workflow
 
 1. **Complete all work** - Implementation finished.
-2. **Pre-completion code review** - If medium+ complexity OR 2+ key_files, invoke `task-reviewer` and fix Critical/Important findings.
+2. **Pre-completion code review** - If the `stride-workflow` Step 3 decision matrix says YES in the **Review** column for this task's row, invoke `task-reviewer` and fix Critical/Important findings.
 3. **Call complete endpoint** - Include placeholder `after_doing_result` and `before_review_result` (hook-bridge runs the real hooks).
 4. **If the curl is vetoed** (after_doing failure surfaced as block reason) - Fix the underlying issue and retry the same curl.
 5. **Curl succeeded?** - The task is in Review (or Done, if no review needed). `before_review` already ran on the post-curl event; check the response for `needs_review`.
@@ -484,7 +484,7 @@ RIGHT (placeholder — hook-bridge does the real work):
 
 ```
 ├─ 1. Work is complete
-├─ 2. (Optional) Pre-completion task-reviewer for medium+ / 2+ key_files
+├─ 2. (Optional) Pre-completion task-reviewer when the matrix's Review column says YES
 ├─ 3. Call PATCH /api/tasks/:id/complete with placeholder hook_result fields
 ├─ 4. hook-bridge runs after_doing on the tool_call (pre-curl)
 ├─ 5. Veto raised? → Read failure, fix issue, retry the curl

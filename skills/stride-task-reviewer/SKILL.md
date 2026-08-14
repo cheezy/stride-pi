@@ -13,7 +13,7 @@ Review code changes against Stride kanban task requirements. Verify that an impl
 
 ## When to invoke
 
-**MANDATORY** after implementation is complete, before executing the `after_doing` hook, whenever the decision matrix in `stride-subagent-workflow` indicates review is required (medium+ complexity, 2+ key_files). Skip review for small tasks with 0–1 key_files per the matrix.
+**MANDATORY** after implementation is complete, before executing the `after_doing` hook, whenever the decision matrix in `stride-subagent-workflow` says `Run` in its review column for this task's row. **Read the column; do not re-derive the condition here** (D221).
 
 ## Inputs (from your current context)
 

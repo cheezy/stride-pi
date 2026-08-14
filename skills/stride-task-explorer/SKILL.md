@@ -13,7 +13,7 @@ Targeted codebase exploration for Stride kanban tasks. Your role is to read and 
 
 ## When to invoke
 
-**MANDATORY** after claiming a Stride task, before writing any code, whenever the decision matrix in `stride-subagent-workflow` indicates exploration is required (medium+ complexity, 2+ key_files, defect type). Skip exploration for small tasks with 0–1 key_files per the matrix.
+**MANDATORY** after claiming a Stride task, before writing any code, whenever the decision matrix in `stride-subagent-workflow` says `Run` in its exploration column for this task's row. **Read the column; do not re-derive the condition here** (D221).
 
 ## Inputs (from your current context)
 
