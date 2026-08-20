@@ -23,7 +23,7 @@ Why accepted rather than backfilled:
 
 The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
 
-## [Unreleased]
+## [1.17.0] - 2026-08-20
 
 ### Added — Step 3 row precedence, the complexity fallback row, and the `reason_code` skip vocabulary (W2112, closing D253 and porting D239)
 
