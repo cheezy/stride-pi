@@ -23,6 +23,20 @@ Why accepted rather than backfilled:
 
 The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
 
+## [Unreleased]
+
+### Added — Step 3 row precedence, the complexity fallback row, and the `reason_code` skip vocabulary (W2112, closing D253 and porting D239)
+
+Two rules the fleet canon records for every port had no text behind them in this one, and the drift check reported all four in-scope rules missing here.
+
+**Row precedence and the fallback row.** More than one row of the Step 3 decision matrix can describe the same task — a defect of `medium` complexity matches the complexity row and the type row at once — and nothing said which one governed, leaving the collision D232 had just cleared out of the surrounding prose alive inside the rows themselves. Step 3 gains a `Row Precedence` subsection stating the reading order: Branch A's row, then `small, 0-1 key_files` whatever the task's type, then `Defect type` ahead of the bare complexity rows, then the complexity row itself, then the fallback. That order follows the printed rows except in one place — `Defect type` prints sixth and is settled third. The matrix also gains a closing `Complexity absent or unrecognised` row (Decompose Skip, Explore YES, Plan YES, Review YES) for a task arriving with no complexity or an unfamiliar one, which until now matched no row whatsoever; the precedence text confines that row to exactly that case and rules out using it to break a tie. The `stride-subagent-workflow` mirror gains the same row in its own `Run`/`Skip` vocabulary, since that table is required to agree with Step 3 row for row — the order itself is stated once, in Step 3, and the mirror points at it. Putting the single-file row above the type row was deliberate: reversed, Explore and Review would flip to YES for every small single-file defect, contradicting Branch B, so this ordering resolves the ambiguity without moving any task onto a different route (D221, D232).
+
+**The `reason_code` skip vocabulary (D239).** A `workflow_steps` entry with `dispatched: false` may now carry an optional `reason_code` beside its prose `reason`, never in place of it — the code is what a compliance breakdown can group on; the sentence is for the person reading the task. The Per-Step Schema table gains the key, and a new vocabulary subsection gives the six accepted values: `decision_matrix_skip`, `ran_inline`, `hook_body_empty`, `subsumed_by_task_spec`, `folded_into_prior_step`, `matrix_deviation`. The set is closed — anything outside it is refused with a `422` — while omitting the key stays valid, so a payload written before this field existed validates unchanged. `matrix_deviation` is the one value that records non-compliance, and it exists so that a step the matrix required and nobody ran cannot be filed as a sanctioned skip.
+
+**Canon anchors.** The four in-scope rules — the failed-verdict note rule, the sole-decision-point rule, row precedence, and the `reason_code` vocabulary — each gain the canon marker comment beside this port's own statement of the rule, so the fleet drift check can tell "carried here" apart from "never checked". The markers only mark; no rule text was reworded to match another port. The verdict-note marker sits beside the Verdict-note rule in this runtime's nested reviewer prompt at `extensions/subagent-dispatch/agents/stride-task-reviewer.md`, which enumerates this port's four section verdicts and gains no fifth: there is no `behaviour_test_matrix` verdict on this runtime, and the canon records that divergence rather than smoothing it over.
+
+Documentation-only and producer-side: no completion field becomes required, and no server behaviour changes.
+
 ## [1.16.0] - 2026-08-19
 
 

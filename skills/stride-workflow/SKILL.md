@@ -154,8 +154,27 @@ DURATION=$((END_TIME - START_TIME))
 | medium (any) | Skip | YES | YES | YES |
 | large (any) | Skip | YES | YES | YES |
 | Defect type | Skip | YES | Skip (unless large) | YES |
+| Complexity absent or unrecognised | Skip | YES | YES | YES |
 
+<!-- canon:decision-matrix-authority v1 -->
 **This matrix is the SOLE decision point for the Decompose, Explore, Plan, and Review columns.** Nothing elsewhere in this plugin may state a second, separately-satisfiable condition for any of them; where other prose mentions one of these steps it describes what this matrix already decided and defers to it. **If any prose appears to give an independent trigger, the matrix wins.** That ambiguity was defect D221, and this rule is its fix.
+
+<!-- canon:row-precedence v1 -->
+### Row Precedence
+
+**A task can satisfy several rows of the table above at once, so resolve them in the order set out here rather than in the order they are printed.** The two orders agree everywhere but one place: `Defect type` prints sixth and is settled third, ahead of the three complexity rows printed above it. Every other row keeps its printed position, and the fallback row added at the foot of the table is both printed last and settled last. Leaving this unstated keeps the D221 collision alive one level down — inside the rows, where the paragraph above cannot reach it.
+
+**Branch A's row settles first.** `Goal type OR large+undecomposed OR 25+ hours` sends the task to decomposition and ends the question; nothing below it is consulted, and each child task is read against this table on its own when it is claimed.
+
+**`small, 0-1 key_files` settles next, and the task's type plays no part in it.** The row is keyed to how much work the change is, not to what kind of work it is called: filing a single-file edit as a defect does not make it any larger. A `small` defect carrying one `key_files` entry therefore lands here and takes Branch B.
+
+**`Defect type` settles next, above `small, 2+ key_files`, `medium (any)` and `large (any)`.** A defect still unplaced is governed by the row written about defects rather than by the row that merely shares its complexity. Its `Skip (unless large)` cell holds two answers: Plan reads `YES` when the defect's complexity is `large`, and `Skip` at every other complexity.
+
+**Then the row the task's own complexity picks out**, be that `small, 2+ key_files`, `medium (any)` or `large (any)`. These are the Branch C rows, and their cells mean exactly what they say.
+
+**`Complexity absent or unrecognised` settles last, and on its own condition alone** — the task arrived carrying no `complexity`, or carrying something this table does not name among `small`, `medium` and `large`. Without it, a task in that state matches nothing at all and no one can say what should follow. It arbitrates nothing: two rows that both matched are separated by the order above, never by dropping down to this one.
+
+**Exactly one row is left standing for any task**, which is what every per-column instruction assumes when it tells you to read a cell. The placement of `small, 0-1 key_files` above `Defect type` is what carries the weight: reverse the two and Explore and Review would flip to `YES` for every small single-file defect — two dispatches bolted onto the smallest shape of work this plugin handles, and a plain conflict with Branch B, whose whole instruction for that shape is to go on to Step 4 with nothing dispatched. This order was chosen because it decides the collisions the table already contained without sending any task down a route it was not already on (D221, D232).
 
 ### Branch A: Goal / Large Undecomposed Task
 
@@ -574,6 +593,25 @@ Each element of `workflow_steps` is an object with these keys:
 | `dispatched` | boolean | Always | `true` if the step ran; `false` if intentionally skipped |
 | `duration_ms` | integer | When `dispatched=true` | Wall-clock time the step took, in milliseconds |
 | `reason` | string | When `dispatched=false` | Short explanation of why the step was skipped |
+| `reason_code` | enum | Optional, when `dispatched=false` | The skip's category in countable form (D239) — sent with `reason`, never in place of it. The six accepted spellings are below; anything else is refused with a `422`, and leaving the key off is always valid |
+
+<!-- canon:reason-code-vocabulary v1 -->
+### `reason_code` Vocabulary
+
+An entry marked `dispatched: false` may also carry a `reason_code`. It rides alongside the prose `reason` and never displaces it — the code is the half that can be counted across tasks, the sentence is the half written for whoever opens the task (D239). Six spellings are accepted:
+
+| Code | When to record it |
+|---|---|
+| `decision_matrix_skip` | This task's governing row in Step 3 shows `Skip` in this step's column |
+| `ran_inline` | The work itself happened, but this runtime did it in the main context instead of a dispatched subprocess — the ordinary case on Pi |
+| `hook_body_empty` | The hook's `.stride.md` section carries no body, so there is no command to run (`after_doing` and `before_review` only) |
+| `subsumed_by_task_spec` | Whatever this step would have determined was already fixed by the task record |
+| `folded_into_prior_step` | This step's output arrived inside an earlier one — commonly an exploration pass that also settled the approach |
+| `matrix_deviation` | A step the matrix required went unrun |
+
+The set is closed. A seventh spelling comes back from the completion API as a `422`, which is what keeps a typo from quietly opening a bucket of its own. Omitting the key is always acceptable — the sentence by itself already documents the skip in full, so a payload written before this field existed validates unchanged.
+
+**`matrix_deviation` is the only value in the set that records non-compliance**, and that is precisely why it is there. When the matrix called for a step and you did not run it, file it under that code and not under `decision_matrix_skip`, which would dress the departure up as something the table approved. The circumstances themselves belong in `reason`.
 
 ### End-of-Workflow Example (full dispatch)
 

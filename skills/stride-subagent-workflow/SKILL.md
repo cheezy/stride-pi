@@ -108,8 +108,11 @@ Use this matrix to determine which inline skills to invoke based on task attribu
 | Goal type | Run | Skip* | Skip* | Skip* |
 | Large complexity, not yet decomposed | Run | Skip* | Skip* | Skip* |
 | 25+ hour estimate, not yet decomposed | Run | Skip* | Skip* | Skip* |
+| Complexity absent or unrecognised | Skip | Run | Run | Run |
 
 *After decomposition, each resulting child task follows its own row in this matrix when claimed individually.
+
+**This table states no precedence of its own.** When a task fits more than one row, the `Row Precedence` subsection of `stride-workflow` Step 3 is what picks the governing row — including where the bottom row belongs, which is last, and only for a task whose `complexity` is missing or is none of the three known values.
 
 **Quick rules:**
 - If the task is a **goal** or has **large complexity without child tasks** or a **25+ hour estimate**: invoke the decomposer first. The decomposer breaks it into claimable child tasks — you don't implement goals directly.
