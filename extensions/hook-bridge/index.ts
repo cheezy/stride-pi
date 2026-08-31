@@ -32,7 +32,8 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-agent";
 
 import { parseHookSection } from "./stride-md-parser.js";
-import { detectStrideHook, type StrideHookName } from "./curl-matcher.js";
+import { detectStrideHook, taskIdFromCommand, type StrideHookName } from "./curl-matcher.js";
+import { clearLoopState, recordLoopStateForCompletion } from "./loop-state.js";
 import {
   finalizeAfterDoing,
   selfHealChangedFilesUpload,
@@ -148,6 +149,12 @@ export default function (pi: ExtensionAPI): void {
       // claim-time dirty baseline is likewise (re)recorded post-section, hashed
       // against the post-pull tree.
       deleteDiffArtifacts(ctx.cwd);
+      // (W2150) A claim opens a new task window, so the previous completion's
+      // loop-state record is stale. Cleared unconditionally on ANY command
+      // matching the claim URL -- success or failure of the claim itself --
+      // exactly as stride-hook.sh does. The routing is by URL pattern, and an
+      // over-eager clear costs only a missed gate, which is the safe side.
+      clearLoopState(ctx.cwd);
     }
 
     // before_review self-heal: if the after_doing finalize never landed the
@@ -175,6 +182,29 @@ export default function (pi: ExtensionAPI): void {
       for (const raw of toolOutputCandidates(event.content, event.details)) {
         if (writeCanonicalResponse(ctx.cwd, raw)) break;
       }
+    }
+
+    // (W2150) Record the loop state for a successful completion -- the fleet
+    // contract at .stride/.loop-state.json that stride's Stop gate reads out of
+    // a shared checkout. Gated to before_review (the route that fires AFTER a
+    // /complete succeeds), placed after the canonical capture above so the
+    // guarded Tier 2 fallback can see a fresh file, and before runHook so the
+    // ordering mirrors stride-hook.sh. Best-effort throughout: nothing here can
+    // disturb the already-succeeded /complete.
+    if (hook === "before_review") {
+      let sessionId = "";
+      try {
+        sessionId = ctx.sessionManager.getSessionId() ?? "";
+      } catch {
+        sessionId = "";
+      }
+      recordLoopStateForCompletion({
+        cwd: ctx.cwd,
+        ownCandidates: toolOutputCandidates(event.content, event.details),
+        canonicalText: readCanonicalResponse(ctx.cwd),
+        taskId: taskIdFromCommand(command),
+        sessionId,
+      });
     }
 
     const result = await runHook(hook, ctx);

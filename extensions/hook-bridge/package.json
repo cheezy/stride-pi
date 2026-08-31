@@ -4,6 +4,9 @@
   "description": "Pi extension that bridges Stride .stride.md lifecycle hooks (before_doing, after_doing, before_review, after_review) onto Pi's tool_call / tool_result events.",
   "license": "MIT",
   "type": "module",
+  "scripts": {
+    "test": "node --test *.test.ts"
+  },
   "pi": {
     "extensions": [
       "./index.ts"
