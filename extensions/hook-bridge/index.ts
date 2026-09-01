@@ -35,6 +35,11 @@ import { parseHookSection } from "./stride-md-parser.js";
 import { detectStrideHook, taskIdFromCommand, type StrideHookName } from "./curl-matcher.js";
 import { clearLoopState, recordLoopStateForCompletion } from "./loop-state.js";
 import {
+  ADVISORY_CUSTOM_TYPE,
+  decideAdvisoryContinuation,
+  type AdvisoryDecision,
+} from "./advisory-continuation.js";
+import {
   finalizeAfterDoing,
   selfHealChangedFilesUpload,
   readFinalizerEnv,
@@ -257,6 +262,45 @@ export default function (pi: ExtensionAPI): void {
         deleteDiffArtifacts(ctx.cwd);
       },
     });
+  });
+
+  // (W2151) Advisory loop continuation.
+  //
+  // NOT a gate, and not a weaker version of one: `turn_end` and `agent_end`
+  // register with no result type, so nothing this extension puts on them could
+  // refuse a stop even in principle. This fires at the head of the NEXT turn --
+  // the turn that should have claimed the next task has already ended, and if
+  // the user never prompts again this never runs at all. See the ADR-002
+  // addendum for why that is the strongest thing available in this runtime.
+  //
+  // All the logic lives in advisory-continuation.ts, which is Pi-free and takes
+  // `fetch` as a parameter. This site is the only place the real global fetch is
+  // supplied, and it is unreachable from the test suite -- which is what makes
+  // "the API is never called from a test" structural rather than a convention.
+  pi.on("before_agent_start", async (_event, ctx) => {
+    let sessionId = "";
+    try {
+      sessionId = ctx.sessionManager.getSessionId() ?? "";
+    } catch {
+      sessionId = "";
+    }
+    let decision: AdvisoryDecision;
+    try {
+      decision = await decideAdvisoryContinuation({ cwd: ctx.cwd, sessionId, fetch });
+    } catch {
+      return; // never disturb the user's turn
+    }
+    if (!decision.inject) return;
+    // Deliberately no `systemPrompt`: that field chains across extensions and
+    // would persist a Stride instruction into unrelated turns. One message is
+    // the smallest thing that satisfies the requirement.
+    return {
+      message: {
+        customType: ADVISORY_CUSTOM_TYPE,
+        content: decision.text,
+        display: true,
+      },
+    };
   });
 }
 

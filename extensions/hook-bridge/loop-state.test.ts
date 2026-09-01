@@ -11,6 +11,7 @@ import {
   completedAtNow,
   loopStateFieldsFrom,
   loopStateSafe,
+  readLoopState,
   recordLoopStateForCompletion,
   writeLoopState,
 } from "./loop-state.ts";
@@ -410,6 +411,49 @@ describe("the fleet record shape", () => {
     assert.deepEqual(loopStateFieldsFrom(openCodeFixture), {
       identifier: "W99",
       needsReview: true,
+    });
+  });
+});
+
+describe("readLoopState", () => {
+  it("round-trips a record the writer produced", () => {
+    withTmp((dir) => {
+      recordLoopStateForCompletion({
+        cwd: dir,
+        ownCandidates: [completeBody("W2151", true)],
+        sessionId: "ses_abc",
+      });
+      assert.deepEqual(readLoopState(dir), {
+        identifier: "W2151",
+        needs_review: true,
+        completed_at: readRecord(dir).completed_at,
+        session_id: "ses_abc",
+      });
+    });
+  });
+
+  it("returns null for anything the writer would not have produced", () => {
+    const bad: [string, string][] = [
+      ["non-JSON", "{not json"],
+      ["a JSON array", "[]"],
+      ["a bare string", '"W2151"'],
+      ["stringified needs_review", '{"identifier":"W1","needs_review":"false","completed_at":"t","session_id":"s"}'],
+      ["unsafe identifier", '{"identifier":"W 1","needs_review":false,"completed_at":"t","session_id":"s"}'],
+      ["missing session_id", '{"identifier":"W1","needs_review":false,"completed_at":"t"}'],
+      ["missing completed_at", '{"identifier":"W1","needs_review":false,"session_id":"s"}'],
+    ];
+    for (const [label, body] of bad) {
+      withTmp((dir) => {
+        fs.mkdirSync(path.join(dir, ".stride"), { recursive: true });
+        fs.writeFileSync(loopPath(dir), body);
+        assert.equal(readLoopState(dir), null, label);
+      });
+    }
+  });
+
+  it("returns null when the file is absent", () => {
+    withTmp((dir) => {
+      assert.equal(readLoopState(dir), null);
     });
   });
 });

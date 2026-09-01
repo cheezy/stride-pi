@@ -226,6 +226,14 @@ All five timeouts match `HOOK_TIMEOUTS_MS` in `extensions/hook-bridge/index.ts` 
 
 **Claim-time base-ref refresh:** a claim always opens a new task window, so on **every** detected claim curl the bridge refreshes `TASK_BASE_REF` in `.stride-env-cache` to the current `git rev-parse HEAD` and clears the two state files — even when the claim response cannot be parsed into task fields (in which case the existing `TASK_` identity lines are preserved and only the base ref is refreshed). This prevents a base ref recorded under a prior claim from surviving and making the `after_doing` diff span every commit since that older claim. The refresh is skipped silently when HEAD is unresolvable (e.g. a non-git directory). Note: the canonical shell hook's persisted-output `jq` fallback is **N/A for pi** — pi derives the base ref from local git (`git rev-parse HEAD`), not from the claim response JSON, so there is no oversized-response truncation path to recover from.
 
+### Loop continuation (advisory, not a gate)
+
+After a completion that recorded `needs_review: false`, the bridge injects one message at the start of your **next** turn naming the task that is claimable now. It reads the completion record at `.stride/.loop-state.json` and asks `GET /api/tasks/next` for the identifier.
+
+**This advises; it cannot enforce.** Pi's end-of-turn events (`turn_end`, `agent_end`) register with no result type, so no extension can refuse a Pi session ending — unlike Claude Code, whose `Stop` hook can. By the time this can speak the previous turn is already over, and if you never prompt again it never fires. The model is also free to ignore the message. See the Addendum in `docs/ADR-002-hook-mechanism.md` for the full reasoning.
+
+Because Pi supplies no `stop_hook_active` equivalent, the only bound is a counter the extension keeps at `.stride/.pi-advisory-continuations` (already covered by the `.stride/` gitignore entry), keyed on the completed task and defaulting to **two** injections per unfollowed completion. Set `STRIDE_PI_ADVISORY_MAX` to an unsigned decimal to change it; anything else is ignored and the default stands. The injected message names a task identifier only — never a token, a URL, or a response body — and an identifier that is not identifier-shaped is refused outright rather than cleaned up, because it lands in a prompt.
+
 ### Fallback: manual execution
 
 When you install with `--no-extensions` (or run on a Pi version that can't load the extension), no automatic interception happens and the agent must execute `.stride.md` hooks directly:

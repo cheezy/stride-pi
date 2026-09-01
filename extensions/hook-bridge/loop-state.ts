@@ -211,6 +211,42 @@ export function clearLoopState(cwd: string): void {
 }
 
 /**
+ * Read and validate the record from disk. Null on an absent, unreadable, or
+ * non-JSON file, and on any field that fails the writer's own rules — a reader
+ * that accepted a record the writer would not produce would be reading
+ * something other than the fleet contract. Never throws.
+ *
+ * `needs_review` must be a real boolean here for the same reason the writer
+ * insists on one: a stringified "false" is malformed, not falsy.
+ */
+export function readLoopState(cwd: string): LoopStateRecord | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(cwd, LOOP_STATE_FILE), "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const rec = parsed as Record<string, unknown>;
+  if (!loopStateSafe(rec.identifier)) return null;
+  if (typeof rec.needs_review !== "boolean") return null;
+  if (typeof rec.completed_at !== "string" || rec.completed_at.length === 0) return null;
+  if (typeof rec.session_id !== "string" || rec.session_id.length === 0) return null;
+  return {
+    identifier: rec.identifier,
+    needs_review: rec.needs_review,
+    completed_at: rec.completed_at,
+    session_id: rec.session_id,
+  };
+}
+
+/**
  * Is this raw body a GENUINE parse failure, as opposed to absent or merely
  * uninteresting? The shell distinguishes two silent-no-write cases on purpose:
  * a 422 legitimately records nothing and is not announced, but an UNPARSABLE
