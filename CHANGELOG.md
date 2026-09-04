@@ -23,6 +23,41 @@ Why accepted rather than backfilled:
 
 The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
 
+## [1.19.0] - 2026-09-04
+
+Ports the three review-convergence rules stride shipped in its 1.74.0 (goal G430), each adapted to Pi's own surfaces. Two of the three answer differently here than in the sibling ports, and for the same underlying reason: this port has an executable self-check, so "stated, not enforced" had to be argued from what that check can actually observe rather than from its absence.
+
+### Added — a two-round ceiling on review, and a terminal state to reach when it binds (W2167)
+
+Review is capped at two rounds, the second verifying rather than re-reviewing. A round is an invocation of the reviewer — by `dispatch_agent` or inline as the `stride-task-reviewer` skill — whose response yielded a first fenced ```json block that parsed into `structured`. Deliberately not "a dispatch": both invocation paths report `dispatched: true`, so a crashed one would otherwise burn a round.
+
+The cap is prose, and the reason given is specific to this port rather than inherited. The parsed block carries no round number, the reviewer schema is pinned as a mirror of the canonical one, and no executable surface here can observe that a round happened — `dispatch_agent` receives no task identifier, and the hook bridge sees only the claim, complete and mark_reviewed calls.
+
+**The terminal state is defined here, not ported.** This port had no `review_blocked` status and no "stop without completing" vocabulary, and an exploratory session had rated that exact absence a Major stranding path in a sibling port. It is now four concrete actions, and a session run against this port confirmed all four are executable from where the agent stands.
+
+Fourteen defects were found and fixed before this shipped. Two were false factual claims inside the paragraph whose whole purpose is an honest account of the mechanism; correcting one closed a latent gap, since it had contradicted the halt paragraph in a direction that would have released a claimed task with no record of why.
+
+### Added — an optional `cosmetic` class on reviewer findings, refused mechanically (W2168)
+
+Entries in `issues[]` may carry an optional `cosmetic` boolean: presentational only, and valid only on a `minor` finding that is not `category: "security"`.
+
+**This port enforces that rather than only stating it, and the divergence from its siblings is the point.** They carry the rule as prose partly because they have no executable self-check; this port has one. The deeper reason they gave — that an assert would read a value the agent set from its own memory — is specific to a *round number*. A cosmetic shape pin reads severity, category and the flag's type, all of them reviewer-authored and already present in `structured`, so here it can refuse for real. Two asserts were added and executed against fixtures before being written in; a security pass and an exploratory session each ran more. All three claimed refusals fire, and all three stated limits hold against primary sources.
+
+`schema_version` moves 1.4 → 1.7 across the declarations, with the gap recorded rather than papered over: this port carries neither 1.5's nested `considerations[]` nor 1.6's `behaviour_test_matrix`, and the declarations now name both absences and call adopting them a separate, larger gap. Sweeping was necessary because three sentences here cite the canonical file's version, which really is 1.7 — at 1.4 they were false statements of fact inside the change that codifies that a false statement is never cosmetic.
+
+### Added — `dispatch_count` review-cost telemetry, with its limits rebuilt for this port (W2169)
+
+The `reviewer` entry of `workflow_steps` may carry an optional `dispatch_count`: how many times that step's subagent was invoked, an inline run included, since Step 5 reports both paths as `dispatched: true`. It counts invocations, not rounds — one that crashed still spent its tokens. Omitting it stays valid and no seventh step name is added.
+
+The six limits ship inline, because every skill here is a single `SKILL.md` and this runtime has no discovery path for a sibling file. Four of them could not be ported as written:
+
+- **Limit (2) inverts.** stride warns against dividing duration by count because a security specialist, an exploratory session and a hardening step all fold their wall-clock into `duration_ms`. None of those three exists on this port, so nothing folds in and the division really is a mean per invocation — still not a per-round figure, because a crashed invocation costs a dispatch and consumes no round, and nothing records how many were which.
+- **Limit (5) drops stride's recovery half.** This port writes no per-round artifact, the count lives only in session memory, and a structured round field is forbidden rather than merely missing.
+- **Limit (6) claims more than stride's, not less.** The executable self-check exists; it simply reads the reviewer's parsed block and never touches `workflow_steps`. Nothing here validates the key, client or server, so the guard falls to the first consumer that reads it.
+- **Limit (3)** names both readings of a `dispatched: false` reviewer entry — a decision-matrix skip, where the missing figures cost nothing because nothing ran, and `ran_inline`, where the review did run and the entry records none of what it cost.
+
+The `stride-completing-tasks` paragraph that restates this schema gains the explicit sync pact this port declares for its other mirrors; without one, a future canon bump would leave it silently stale, since the checker tests anchors rather than sentences.
+
 ## [1.18.0] - 2026-09-01
 
 ### Added — loop-state evidence on completion, and an advisory continuation that says plainly it is not a gate (W2150, W2151)
