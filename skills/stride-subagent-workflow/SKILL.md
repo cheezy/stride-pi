@@ -218,9 +218,9 @@ The reviewer returns a human-readable prose summary followed by a fenced ```json
 
 **If issues are found:**
 - Fix all Critical issues before proceeding
-- Fix Important issues before proceeding
-- Minor issues are optional but recommended
-- After fixing, you do NOT need to re-run the reviewer — proceed to the after_doing hook
+- Fix **all** Important issues before proceeding — through round two; after it, record them per Step 5's cap, never a `category: "security"` one
+- Minor issues are optional but recommended — **except a `category: "security"` one, which is never optional and never recordable at any severity; fix or escalate it per Step 5's cap**
+- After fixing, **re-invoke the reviewer to verify those fixes** — review is capped at **two rounds**, the second scoped to verifying the first's fixes while still receiving the full diff. The ceiling, what the second invocation carries, the record-don't-fix disposition after it, the `critical` exemption and the never-recordable `category: "security"` rule are stated in `stride-workflow` **Step 5** — **keep the two in sync; an edit there needs the matching edit here.** No canon anchor lives in this file: the canon assigns one per rule per port directory and this port's is placed beside Step 5.
 
 ### Extracting the structured review block
 
@@ -306,6 +306,8 @@ Legacy + structured fields coexist in the same map; the server persists `reviewe
 2. Set `acceptance_criteria_checked` from the count of criterion lines you find in the prose acceptance-criteria table, or to `0` if none can be parsed.
 3. **Omit** every structured field (`status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, `schema_version`) from the PATCH payload — do not send empty placeholders. The Kanban server tolerates their absence (the new ReviewReportPanel renders only what it receives).
 4. Keep `dispatched: true` and `duration_ms` as captured. The fallback path produces a degraded-but-valid completion, never a hard failure.
+
+A response that reached this fallback produced no parsed block, so it **was no round** — Step 5's two-round cap is **inapplicable to it rather than satisfied by it**. **Re-invoke once; the failed attempt consumes nothing.** If the re-invocation also fails to parse, stop re-invoking and follow items 1-4 above — the degraded-but-valid completion is the disposition, and this paragraph does not displace it. The cap itself still does not bound a reviewer that repeatedly lands here; the one-retry bound above is what does. Because item 3 omits `issues`, `status`, `issue_counts` and `security_considerations` by construction, the record-don't-fix disposition has no input here either — **carry the last parsed round's findings into `completion_notes` and one line of `completion_summary` before submitting the degraded payload**, by severity, category and `file:line` only. **And the same two exclusions bind here.** An unfixed **`critical`** at any round number, and any unfixed **`category: "security"`** entry at any severity, are **never carried across and never shipped in a degraded payload**: on either, take `stride-workflow` Step 5's stop-and-report exit instead of submitting. This paragraph and its twin in `stride-workflow` are intentionally identical in substance — **keep the two in sync; an edit here needs the matching edit there.**
 
 ## Workflow Flowchart
 
