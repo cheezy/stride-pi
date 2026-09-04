@@ -254,6 +254,8 @@ The reviewer returns "Approved" or a list of issues (Critical, Important, Minor)
 - Minor issues are optional but recommended — **except a `category: "security"` one, which is never optional and never recordable at any severity; fix or escalate it per the cap above**
 - **Save the reviewer's full output** -- you'll include it as `review_report` in Step 7
 
+**A round whose findings are ALL cosmetic buys no further review round (W2168).** A `cosmetic: true` issue is presentational only — the claim is correct and the artifact it points at asserts nothing false — so it is reported and recorded like any other finding but never spends a round. If every entry in `issues[]` is cosmetic, fix them or not as you choose and **proceed without re-invoking**; a single substantive finding alongside them means the round is not all-cosmetic and the normal path applies. **The predicate reads `issues[]` only, while `status` has three inputs** — issues, `not_met` criteria and `not_met` project checks — so **if `status` is `changes_requested`, honour it and invoke the next round regardless.** A conforming reviewer cannot produce that pair (an unmet criterion or check owes a paired `issues[]` entry, which defaults to `important` and so cannot be cosmetic), but the wording invites the mistake, so it is stated rather than left to inference. **Scoped to a response whose fenced block actually parsed into `structured`:** on the JSON-parse fallback below, item 3 omits `issues`, `status` and `issue_counts` by construction, so "every entry is cosmetic" would be **vacuously true** over an absent array while the prose reports real findings — there this rule is **inapplicable, not satisfied**, the same word the cap uses, and **an absent or empty `issues[]` is never an all-cosmetic round.** **When review ends at an all-cosmetic round, whatever round that was, the record-don't-fix disposition above still governs what is left:** name every finding you did not fix by severity, category and `file:line` only in `completion_notes` and one line of `completion_summary`, on the same bounded, redacted terms — read "after round two" there as "after the round that ended review". Ending review early spares the next round; it never spares the record. `cosmetic` is a key of the **canonical** reviewer schema mirrored here, not one this port invented, so the prohibition on inventing a structured round field above is untouched by it. **Cosmetic is orthogonal to severity, not a fourth level of it:** it only ever sits on a `minor`, and a `minor` can perfectly well be substantive. **Never `cosmetic` on a `critical`, an `important`, or a `category: "security"` finding** — the Python self-check under "Extracting the structured review block" below refuses the submission, and unlike the round count that refusal is real, because every value it reads is the reviewer's rather than one you set from memory. **What it cannot reach is the flag's truth.** Its definition is owned by the two `stride-task-reviewer` surfaces; **this paragraph is the mirror**, and the canon anchor sits beside that definition, not here.
+
 **If custom agents are unavailable**, self-review:
 - [ ] Each line of `acceptance_criteria` -- is it met?
 - [ ] Each item in `pitfalls` -- did you avoid it?
@@ -303,6 +305,22 @@ assert len(reviewer_result.get("project_checks", [])) == len(structured.get("pro
 task_criterion_lines = [c for c in (task["acceptance_criteria"] or "").split("\n") if c.strip()]
 assert len(structured["acceptance_criteria"]) == len(task_criterion_lines), \
     "acceptance_criteria count must equal the task's criterion-line count — re-run the reviewer, do not truncate or pad"
+
+# Cosmetic shape pin — `cosmetic: true` may only ever sit on a minor, non-security
+# finding, and must be a real boolean. This REFUSES; it never coerces, and it is
+# never something to "fix" by editing the block. It reaches the flag's TYPE and its
+# CO-ORDINATES only, never its truth. Unlike a round number, every value it reads is
+# the reviewer's, not one you set from your own memory a line earlier.
+_issues = structured.get("issues") or []
+assert isinstance(_issues, list) and all(isinstance(i, dict) for i in _issues), \
+    "issues must be a list of objects — re-run the reviewer; never repair it by dropping an entry"
+assert not [i for i in _issues
+            if "cosmetic" in i and not isinstance(i.get("cosmetic"), bool)], \
+    "cosmetic must be a boolean when present — re-run the reviewer, do not coerce it"
+assert not [i for i in _issues
+            if i.get("cosmetic") is True
+            and (i.get("severity") != "minor" or i.get("category") == "security")], \
+    "cosmetic is only ever valid on a minor, non-security finding — do not submit"
 ```
 
 **Field mapping into `reviewer_result`:**
@@ -322,7 +340,7 @@ Approved
 
 ```json
 {
-  "schema_version": "1.4",
+  "schema_version": "1.7",
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
@@ -348,7 +366,7 @@ Approved
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "issues_found": 0,
   "acceptance_criteria_checked": 1,
-  "schema_version": "1.4",
+  "schema_version": "1.7",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
   "issues": [],
