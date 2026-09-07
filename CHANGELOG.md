@@ -23,6 +23,14 @@ Why accepted rather than backfilled:
 
 The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
 
+## [1.20.0] - 2026-09-07
+
+### Added — a back-reference beside every anchored rule (W2137)
+
+Canon entry `edit-site-back-reference` requires prose beside every governed-rule statement naming the canon by path and the entry id, and the drift check implements it as a property, so an anchor standing alone is reported rather than passing. Four paragraphs close this extension's five anchored statements: the verdict-note pair in `extensions/subagent-dispatch/agents/stride-task-reviewer.md` — this repository's reviewer is nested there rather than at a top-level `agents/` path — and the decision matrix, its ordering, the review ceiling and the `reason_code` vocabulary in `skills/stride-workflow/SKILL.md`.
+
+Each says rewording is free and changing the claim is not, and closes by naming what the checker actually inspects: the anchor, never the sentence. Its `decision-matrix-authority` and `row-precedence` anchors are three lines apart — the tightest pair in the fleet — so one paragraph names both and says which prose answers to which.
+
 ## [1.19.0] - 2026-09-04
 
 Ports the three review-convergence rules stride shipped in its 1.74.0 (goal G430), each adapted to Pi's own surfaces. Two of the three answer differently here than in the sibling ports, and for the same underlying reason: this port has an executable self-check, so "stated, not enforced" had to be argued from what that check can actually observe rather than from its absence.
