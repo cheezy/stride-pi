@@ -144,3 +144,22 @@ The one server-supplied string that reaches the injected message is the next tas
 We did not reach for the `tool_call` veto here. Blocking the tool calls of a turn that is trying to finish is far more invasive than the advisory this task called for, and deserves its own decision rather than an addendum to this one.
 
 **Reversal:** reopen if a future Pi release gives `turn_end`, `agent_end`, or any end-of-turn event a result type with a cancel/block field — the advisory would then become a fallback for older runtimes rather than the mechanism.
+
+
+## Addendum — 2026-09-11 (W2185): the stdout-preservation curl guard — what this port is, and is not, exposed to
+
+The canonical shell hook refuses a Stride API curl that hides its own response — `-o`/`--output`, a `>` redirect, or a pipe into a transformer such as `jq`. The refusal is not about session control. It exists because in that runtime the response **is** the diff's input: the hook parses the completion reply off the Bash tool's stdout, so a hidden response means the diff is never captured and the task completes with an empty `changed_files` and **no error at all**. Silence is the whole harm.
+
+Separate the diff's **content** from its **destination**, because this port sits differently on each.
+
+**Content: not exposed.** The snapshot is never read from a response. `extensions/hook-bridge/changed-files.ts` computes it by running `git` as a child process and reading *git's* stdout, the upload is this extension's own `fetch()`, and the base ref comes from `git rev-parse HEAD` on every detected claim. Concealing an API reply cannot empty or corrupt the diff itself, and an unresolvable base ref is loud rather than silent — the snapshot recomputes from the branch point and says so on stderr.
+
+**Destination: exposed, on one path.** The upload target is `taskIdFromCommand(command)` with a fallback to the env-cache `TASK_ID`, and that cache is written from the *claim* response. The URL regex in `curl-matcher.ts` is digit-only, while the server accepts an identifier-form id. So a completion curl written against `/api/tasks/W2185/complete` yields no id from the URL and falls through to the cache — and if the claim response was concealed, the cache still holds the **previous** task's identity. The diff then uploads against the wrong task, returns 2xx, and reports nothing. That is the guard's harm class exactly, reached by a different route.
+
+**So the verdict is split rather than flat.** This port does not owe the guard to protect its diff's content; it is genuinely not exposed there. It does have a live silent-misrouting path on the destination, and that is **filed as D309** rather than closed here — the fix is a parser change in `curl-matcher.ts` plus its two fallback sites, which is code this decision task did not touch.
+
+**Be precise about what is not the reason.** This port is not exempt for want of somewhere to put a guard. `tool_call` fires before a command executes and can refuse it with `{ block: true, reason }`, and this bridge already uses that veto to stop a completion when `after_doing` fails. The interception point exists and works.
+
+**On the loop-state references.** They are **live plumbing, not vestigial text** carried over from a port that has a gate: `loop-state.ts` defines write/read/clear, `index.ts` clears on claim and writes on complete, and `advisory-continuation.ts` reads it. Measured 2026-09-11, there are **8** such files, not the 11 an earlier estimate reported — that figure counted `.git/` internals. They are recorded here because the guard question was raised partly on their account, and a reader who checks them should find the count and their status already settled.
+
+**Reversal.** Two conditions, and the first is live rather than hypothetical. **(1)** When D309 lands, revisit this addendum: if the upload target becomes resolvable from the request in every URL form, the destination exposure closes and the split verdict collapses into a flat "not owed" — and if it is closed some other way, say which. Until then this record stands as written, with the residual open. **(2)** Reopen the content half if the bridge ever takes the diff or the base ref from an API **response body** instead of from local git, at which point the guard's original harm would land here as it does in the shell ports.
