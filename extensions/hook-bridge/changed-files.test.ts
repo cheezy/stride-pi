@@ -507,8 +507,57 @@ describe("finalizeAfterDoing (fetch mocked)", () => {
   });
 
   it("skips PUT when neither the URL nor the env yields an id", async () => {
-    // No env taskId and a non-numeric URL segment (W999) → taskIdFromCommand
-    // returns "" and there is no fallback, so the guard still skips the PUT.
+    // No env taskId and an id segment that is neither numeric nor an identifier
+    // (abc) → taskIdFromCommand returns "" and there is no fallback, so the
+    // guard still skips the PUT.
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const command = `curl "https://api.example.com/api/tasks/abc/complete" -H "Authorization: Bearer t"`;
+      await finalizeAfterDoing({
+        cwd: dir,
+        command,
+        taskId: undefined,
+        baseRef: base,
+      });
+
+      assert.equal(stub.calls.length, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PUTs to an identifier-form /complete URL over a stale env taskId (D309)", async () => {
+    // A concealed claim response leaves the env cache holding the PREVIOUS
+    // task. The server accepts /api/tasks/W2185/complete by identifier, so the
+    // upload must follow the URL rather than fall through to that stale id.
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const command = `curl -X PATCH "https://api.example.com/api/tasks/W2185/complete" -H "Authorization: Bearer t"`;
+      await finalizeAfterDoing({ cwd: dir, command, taskId: "9999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/W2185/changed_files");
+      assert.equal(readDiffUploadState(dir).taskId, "W2185");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PUTs to an identifier-form /complete URL when the env taskId is undefined (D309)", async () => {
+    // A concealed claim with no prior task in the cache at all: the URL alone
+    // now names the target, where it used to skip the upload.
     const dir = mktemp();
     try {
       gitInit(dir);
@@ -518,14 +567,10 @@ describe("finalizeAfterDoing (fetch mocked)", () => {
 
       stub = stubFetch(() => new Response("{}", { status: 200 }));
       const command = `curl "https://api.example.com/api/tasks/W999/complete" -H "Authorization: Bearer t"`;
-      await finalizeAfterDoing({
-        cwd: dir,
-        command,
-        taskId: undefined,
-        baseRef: base,
-      });
+      await finalizeAfterDoing({ cwd: dir, command, taskId: undefined, baseRef: base });
 
-      assert.equal(stub.calls.length, 0);
+      assert.equal(stub.calls.length, 1);
+      assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/W999/changed_files");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1056,6 +1101,28 @@ describe("selfHealChangedFilesUpload", () => {
     }
   });
 
+  it("targets an identifier-form /complete URL over a stale env taskId (D309)", async () => {
+    // The self-heal resolves the target the same way finalize does, so an
+    // identifier URL must win over the stale cache here too.
+    const dir = mktemp();
+    try {
+      gitInit(dir);
+      fs.writeFileSync(path.join(dir, "a.txt"), "1\n");
+      const base = gitCommit(dir, "base");
+      fs.writeFileSync(path.join(dir, "a.txt"), "2\n");
+
+      stub = stubFetch(() => new Response("{}", { status: 200 }));
+      const command = `curl "https://api.example.com/api/tasks/D309/complete" -H "Authorization: Bearer t"`;
+      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: "9999", baseRef: base });
+
+      assert.equal(stub.calls.length, 1);
+      assert.equal(stub.calls[0].url, "https://api.example.com/api/tasks/D309/changed_files");
+      assert.equal(readDiffUploadState(dir).taskId, "D309");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails loud on a terminal non-2xx PUT: distinct UNRESOLVED message + unresolved=yes marker, without throwing (W1658)", async () => {
     const dir = mktemp();
     const errors: string[] = [];
@@ -1183,11 +1250,14 @@ describe("selfHealChangedFilesUpload", () => {
     }
   });
 
-  it("returns without a request when taskId is undefined", async () => {
+  it("returns without a request when neither the URL nor taskId yields an id", async () => {
+    // An identifier URL (W999) now resolves on its own (D309), so the no-id
+    // case needs a segment that is neither numeric nor an identifier.
     const dir = mktemp();
     try {
       stub = stubFetch(() => new Response("{}", { status: 200 }));
-      await selfHealChangedFilesUpload({ cwd: dir, command, taskId: undefined, baseRef: undefined });
+      const noIdCommand = `curl "https://api.example.com/api/tasks/abc/complete" -H "Authorization: Bearer t"`;
+      await selfHealChangedFilesUpload({ cwd: dir, command: noIdCommand, taskId: undefined, baseRef: undefined });
       assert.equal(stub.calls.length, 0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
