@@ -23,6 +23,20 @@ Why accepted rather than backfilled:
 
 The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
 
+## [1.21.0] - 2026-10-01
+
+### Fixed — an identifier-form completion URL no longer routes the diff through a stale claim cache (D309)
+
+`taskIdFromCommand` read only a numeric id, while the server also resolves `/api/tasks/<identifier>/complete`. A completion URL such as `/api/tasks/W2185/complete` therefore resolved no id and the `changed_files` upload fell back to the claim-derived env cache, which still holds the previous task when the claim response was concealed — so the diff landed on that task with a 2xx and no error. The regex now accepts a numeric id or a `G`/`W`/`D` identifier, still tail-anchored and still returning `""` on any other segment, so the numeric path is unchanged. The closed class keeps the captured id safe to interpolate into the PUT path, and the env-cache fallback stays for ids that are not literal in the command.
+
+### Added — what this extension is, and is not, exposed to by a hidden API response (W2185, W2187)
+
+ADR-002 gains an addendum, and the README a canon-anchored paragraph, recording the split verdict on the fleet's stdout-preservation curl guard: the diff's content is not exposed, because the snapshot comes from `git` and the upload is this extension's own `fetch()`, but its destination was. Since D309 both say the identifier case is closed and name the two shapes that still reach the cache — a shell-expanded id and a literal segment in neither accepted form.
+
+### Added — a release runbook for this repository (W2173)
+
+`RELEASE.md` records how this repository is released, as its own history shows it: which file holds the version, the changelog's shape (and that it has changed over time), that there is no catalog to sync, and the one-line check for whether the changelog's top heading is already tagged. Documentation only.
+
 ## [1.20.0] - 2026-09-07
 
 ### Added — a back-reference beside every anchored rule (W2137)
