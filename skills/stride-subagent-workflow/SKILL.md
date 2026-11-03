@@ -189,6 +189,8 @@ The decomposer will return an ordered list of child tasks with:
 
 The explorer will return a structured summary of: each key file's current state, related test files, existing patterns found, and module APIs to reuse.
 
+While the explorer works, this port simply waits: a `dispatch_agent` call keeps the turn until the subagent exits, so you get no turn to plan in until its summary arrives (a read sent in the same message runs alongside it, but its result arrives with that summary), and the inline skill runs in your own context (evidence in the stride-pi repository's `docs/HOOK_RESEARCH.md`, W2611).
+
 **Use the explorer's output** to inform your implementation — don't discard it. It tells you what exists, what patterns to follow, and what utilities to reuse.
 
 ## Phase 2: Planning (Conditional, Before Coding)
