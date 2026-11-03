@@ -100,6 +100,32 @@ if [ "$INSTALL_EXTENSION" = "true" ]; then
     cp -R "$ext_dir"/. "$INSTALL_DIR/extensions/$ext_name/"
     extension_count=$((extension_count + 1))
   done
+
+  # (W2609) Record the installed version for the stride-workflow Step 0
+  # update check. Only the root package.json carries the release version, and
+  # a loose install copies no root package.json (the nested extension
+  # manifests it does copy are never bumped), so the check reads this record
+  # instead. Every step here is fail-soft: an unparsable version or a failed
+  # write leaves no record (and removes an old one) but never stops the install.
+  # The old record is removed first and the new one written with noclobber, so
+  # a link planted at that path is replaced, never written through.
+  version_record="$INSTALL_DIR/extensions/hook-bridge/.stride-pi-version"
+  if [ -f "$TMPDIR/stride-pi/extensions/hook-bridge/index.ts" ] && [ -d "$INSTALL_DIR/extensions/hook-bridge" ]; then
+    installed_version=$(sed -n '/^[[:space:]]*"version"[[:space:]]*:/{s/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q;}' "$TMPDIR/stride-pi/package.json" 2>/dev/null || true)
+    # Keep identical to VERSION_RE in extensions/hook-bridge/check-plugin-current.ts.
+    version_re='^[0-9]{1,9}(\.[0-9]{1,9}){0,5}(-[0-9A-Za-z.-]{1,32})?$'
+    rm -f "$version_record" 2>/dev/null || true
+    if [[ "$installed_version" =~ $version_re ]] && ( set -C; printf '%s\n' "$installed_version" > "$version_record" ) 2>/dev/null; then
+      echo "Recorded stride-pi $installed_version for the Step 0 update check"
+    else
+      rm -f "$version_record" 2>/dev/null || true
+    fi
+  fi
+else
+  # (W2609) Skills only: there is no update check to feed. An earlier full
+  # install may have left a version record behind; remove it so the leftover
+  # check stays silent rather than report a version this run did not install.
+  rm -f "$INSTALL_DIR/extensions/hook-bridge/.stride-pi-version" 2>/dev/null || true
 fi
 
 echo ""

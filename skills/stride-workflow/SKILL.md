@@ -85,6 +85,15 @@ Whether you arrive here from a creation request or the build loop, **a claim fai
    - If missing: Ask user to create it
    - Verify sections exist: `## before_doing`, `## after_doing`, `## before_review`, `## after_review`, `## after_goal`
 
+3. **Is this install out of date?** Pi runs whatever copy of these skills is installed, so a fix that has shipped on main changes nothing until the user re-installs. Find out once, with `<skill-dir>` standing for the folder that holds this SKILL.md (the location Pi gives for this skill, minus the trailing `/SKILL.md`):
+
+   ```bash
+   node "<skill-dir>/../../extensions/hook-bridge/check-plugin-current.ts" "<skill-dir>" 2>/dev/null
+   ```
+
+   - If it prints a line, pass that line on to the user one time, worded as a plain statement. Do not turn it into a question, do not wait for a reply, and do not hold up the session over it.
+   - No output means there is nothing to report. Treat two other outcomes the same way: the script is not there (a skills-only install has no hook bridge), or the command fails (for example on a Node.js older than 22.18, which cannot run a `.ts` file directly). Say nothing about the check, and go on.
+
 **This step runs once per session, not once per task.**
 
 ---
