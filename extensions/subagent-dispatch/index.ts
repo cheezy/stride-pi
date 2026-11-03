@@ -62,7 +62,7 @@ export default function (pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use dispatch_agent for exploration (agent: 'stride-task-explorer'), code review (agent: 'stride-task-reviewer'), goal decomposition (agent: 'stride-task-decomposer'), hook failure diagnosis (agent: 'stride-hook-diagnostician'), and task enrichment (agent: 'stride-task-enricher') — per the decision matrix in the stride-subagent-workflow skill.",
       "Each dispatch runs in an isolated subprocess and does not affect your main context window beyond the returned result string.",
-      "Pass the full task metadata (key_files, patterns_to_follow, acceptance_criteria, etc.) as part of the prompt — the subprocess has no other way to see it.",
+      "Give the subagent its inputs in the prompt — the subprocess sees nothing of your context. For the explorer and reviewer, when the claim's task file exists, that is the Task / TASK_FILE / read-as-data lines from stride-workflow Step 3 instead of pasted fields; otherwise, and for every other agent, paste the full task metadata (key_files, patterns_to_follow, acceptance_criteria, etc.).",
     ],
     parameters: DispatchParams,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
