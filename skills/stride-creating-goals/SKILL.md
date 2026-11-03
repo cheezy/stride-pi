@@ -263,6 +263,8 @@ These five fields must be filled in on every nested task in the batch — the go
 
 A nested task MAY also carry an optional free-form `technical_details` object (any keys — see `stride-creating-tasks`); it is **not** one of the five review_queue-scored fields and is never required.
 
+**Nested tasks carry a `behaviour_test_matrix` by default, exactly as a standalone task would.** Each nested task whose `testing_strategy` lists a unit or integration test gets a complete seven-category matrix of its own, with any category that does not fit waived by `na_reason` rather than dropped. A manual-only strategy gets `"manual"` rows when its checks try out behaviour the change introduces or modifies. The matrix is left off only for a nested task with no testable behaviour, with a one-sentence reason in that task's `description`; a goal-level `description` is no substitute for a child's matrix. Every row's `test_name` names a test in that task's own `testing_strategy`, and row text never carries a secret. The server takes a missing or empty matrix and refuses one with categories missing with a `422`, so send all seven categories or none. The row shape and vocabulary are in `stride-creating-tasks` § behaviour_test_matrix, which wins if the two ever disagree.
+
 **Minimal nested tasks fail the same way as minimal flat tasks** — causing 3+ hour exploration AND empty review_queue pills at completion.
 
 ## Consuming Provided Context

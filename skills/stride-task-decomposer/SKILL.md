@@ -168,8 +168,19 @@ Every decomposed task MUST include all fields required by `stride-creating-tasks
 | `patterns_to_follow` | Yes | Newline-separated string |
 | `pitfalls` | Yes | Array of strings |
 | `technical_details` | No | Optional free-form object of additional technical context; any keys; NOT one of the five review_queue-scored fields |
+| `behaviour_test_matrix` | By default | Seven categories when the child's tests include a unit or integration test; absent only for a child with nothing testable, explained in its `description`; not a review_queue-scored field |
 
 A decomposed task MAY also carry an optional free-form `technical_details` object (any keys — data shapes, gotchas, decisions, or reference links surfaced during scope analysis). It is never required and is **not** one of the five review_queue-scored fields, so leaving it as `{}` or omitting it is fine. Because it is free-form, never record secrets (tokens, passwords, credentials) in it.
+
+**Give every child with testable behaviour a `behaviour_test_matrix`.** When a child's `testing_strategy` lists a unit or integration test, that child gets a full matrix covering all seven categories: one row per category, each pointing at an actual test or waived with an `na_reason`. A category that does not fit is waived, never dropped, and no filler rows are invented.
+
+- **Manual-only children.** When the child's strategy lists only `manual_tests`, still give it a matrix if those checks try out behaviour the change introduces or modifies, using `type: "manual"` rows whose `test_name` is one of the `manual_tests` entries. If they only read over documentation, wording or configuration, leave it off and give the reason below.
+- **Leaving it off.** Only a child with nothing testable goes without one — a change confined to documentation, wording or configuration — and that child's `description` says so in one sentence, such as `No behaviour_test_matrix: this task only changes documentation, so nothing in it can be tested.`
+- **Names match.** Every row's `test_name` is a test from the child's own `testing_strategy`; if a row calls for a test missing from it, add the test there first. A waived row carries `"N/A"`. `testing_strategy` stays the source, and the matrix only maps it.
+- **Server rule.** A missing or empty matrix passes and never shows an empty pill; one with some categories missing is refused with a `422`, so it is all seven categories or none.
+- **Nothing from the files you read.** You read project files to scope the goal. A credential-shaped string you met there — an API key, a token, a password, a connection string carrying one — must never end up in `behaviour`, `test_name` or `na_reason`; describe the behaviour instead. No row text ever carries a secret.
+
+The row shape and the category, `type` and `status` vocabularies are owned by `stride-creating-tasks` § behaviour_test_matrix, which wins if it and this section ever disagree.
 
 ### Step 6: Output Assembly
 
@@ -480,6 +491,8 @@ Migration → Context → LiveView → Template
 - Task 3 (notifications) depends on [0, 2] — needs both comments and mention parsing
 - Tasks 1 and 2 can run in parallel (fan-out pattern from task 0)
 - No key_file overlap between tasks — each modifies different files
+
+The example leaves `behaviour_test_matrix` off each child to keep it short. A real child with testable behaviour carries one, as Step 5 says.
 
 ## Output
 

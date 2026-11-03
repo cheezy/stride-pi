@@ -112,6 +112,7 @@ Use BEFORE calling `POST /api/tasks` to create any Stride task or defect.
 
 - [ ] `estimated_files` - Helps set expectations: `"1-2"`, `"3-5"`, or `"5+"`
 - [ ] `required_capabilities` - Array of agent skills needed
+- [ ] `behaviour_test_matrix` - Sent by default: seven categories when `testing_strategy` lists a unit or integration test (see Embedded Object Formats)
 
 ## Field Type Validations (CRITICAL)
 
@@ -392,6 +393,7 @@ Use these exact values — any other value will be rejected.
 | `dependencies` | array | Task identifiers `["W45", "W46"]` | No |
 | `pitfalls` | array | Strings `["Don't do X", "Avoid Y"]` | No |
 | `technical_details` | object | Free-form JSON object of any additional technical info | No |
+| `behaviour_test_matrix` | array | Row objects covering all seven fixed categories (see Embedded Object Formats) | No — but sent by default |
 
 ## Embedded Object Formats — WRONG vs RIGHT
 
@@ -494,6 +496,58 @@ RIGHT (array of strings):
 ```
 
 **Shape:** a free-form JSON object holding any additional technical information that doesn't fit the structured fields — data shapes, gotchas, external references, sequencing notes, anything that helps the implementing agent. **Unlike `testing_strategy`, it has NO fixed `valid_keys`** — use whatever keys best describe the task. It is optional (omit it when there is nothing extra to capture) and is **not** one of the five review_queue-scored fields.
+
+### behaviour_test_matrix
+
+**Default: whenever the task's `testing_strategy` lists a unit or integration test, send a complete matrix covering all seven categories.** The matrix maps each kind of behaviour to the test that covers it: one row per fixed category, each pointing at an actual test or marked as waived with an `na_reason`. A category that does not fit the task is waived, never dropped; leaving the whole field off because "some rows don't apply" is the mistake this default is here to stop. Do not invent filler rows to fill a category either — waive it.
+
+**A manual-only strategy** (nothing but `manual_tests`) still gets a matrix when those checks try out behaviour that the change introduces or modifies: each row's `test_name` is one of the `manual_tests` entries, and its `type` is `"manual"`. When the manual checks do nothing but read over documentation, wording or configuration, leave the matrix off and give the reason as the next paragraph says.
+
+**Leave it off only for a task with no testable behaviour** — a change confined to documentation, wording or configuration — and say so in one sentence of `description`, such as `No behaviour_test_matrix: this task only changes documentation, so nothing in it can be tested.` Without that sentence a missing matrix reads as something forgotten.
+
+**Every `test_name` is a test taken from `testing_strategy`.** The two must agree, so if a row calls for a test missing from the strategy, add the test to `testing_strategy` first. A waived row carries `"N/A"` as its `test_name` and explains itself in `na_reason`. The matrix sits beside `testing_strategy`; it never takes its place.
+
+**The server rule is unchanged.** The API accepts a matrix that is missing or empty, and the matrix does not count among the five review_queue-scored fields, so leaving it off never shows an empty pill. A non-empty matrix that is missing any category is refused with a `422` — all seven categories, or none. Sending it by default is how this skill asks you to write tasks, not something the API enforces.
+
+**Row shape.** A row is one JSON object holding `category`, `behaviour`, `test_name`, `type`, `status`, `na_reason` and `position`:
+
+- `category` and `behaviour` are required. Write `status` on every row as well: a row without one is not refused, but the server stores it as `"planned"`, which is wrong for a waived row. Give `position` too (an integer, 0 or more) and keep the array in that order; nothing re-sorts it.
+- `category` is exactly one of `"Happy path"`, `"Boundary"`, `"Error / exception"`, `"Null / empty"`, `"Concurrency"`, `"Lifecycle / wiring"`, `"Contract / serialization"`.
+- `type` is `"unit"`, `"integration"` or `"manual"`, or several of them joined with ` / ` (for example `"unit / manual"`).
+- `status` is `"planned"`, `"passing"`, `"failing"` or `"not_applicable"`. Rows written when the task is created are `"planned"`, or `"not_applicable"` when waived.
+- The API refuses a row that has no real `test_name` and no `na_reason` either.
+
+**No secrets in row text.** `behaviour`, `test_name` and `na_reason` are stored and shown on the board, and the server keeps them exactly as written, so never write a token, password or other credential into any of them, nor where one is kept. Every render path escapes row text, so markup shows up as literal characters; keep raw HTML out of it all the same.
+
+```json
+❌ WRONG (strings instead of row objects):
+"behaviour_test_matrix": ["Happy path: export works", "Boundary: empty board"]
+
+❌ WRONG (some categories missing — the API answers 422):
+"behaviour_test_matrix": [
+  {"category": "Happy path", "behaviour": "…", "test_name": "…", "type": "unit", "status": "planned", "position": 0}
+]
+
+✅ RIGHT (excerpt — a real matrix carries all seven categories in order):
+"behaviour_test_matrix": [
+  {
+    "category": "Happy path",
+    "behaviour": "Exporting a board writes one CSV row per task",
+    "test_name": "test/kanban/export_test.exs — \"writes one row per task\"",
+    "type": "unit",
+    "status": "planned",
+    "position": 0
+  },
+  {
+    "category": "Concurrency",
+    "behaviour": "N/A — an export reads a snapshot and writes nothing shared",
+    "test_name": "N/A",
+    "status": "not_applicable",
+    "na_reason": "No other writer touches the export, so there is no race to cover",
+    "position": 4
+  }
+]
+```
 
 ---
 **References:** For the full field reference, see `api_schema` in the onboarding response (`GET /api/agent/onboarding`). For endpoint details, see the [API Reference](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/api/README.md).
