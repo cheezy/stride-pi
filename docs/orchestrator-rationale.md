@@ -120,3 +120,15 @@ The server is rolling out hard enforcement behind a feature flag `:strict_comple
 | Skipped hooks | Agent called complete directly | Step 6 blocks Step 7 |
 | Asked user permission | Agent prompted between steps | Automation notice says don't |
 | Speed over process | Agent optimized for throughput | Every step is framed as mandatory |
+
+## Why the Break-it Evidence Comes From the Implementer
+
+*Taken from `skills/stride-workflow/SKILL.md`, Step 4, the break-it procedure, and Step 5, the `break_it` section of the reviewer invocation.*
+
+A test can pass in every run while asserting nothing that the change controls. In stride, where the procedure began (W2294), that happened often enough to need a rule: assertions satisfied by unrelated prose elsewhere in the same file, a check placed outside the loop it was meant to run in, a limit raised far past its intended value with every test still green, and a stray quote that swallowed the assertions after it. Fix rounds slipped the same way, since a fix that edits a test is a new chance to make it vacuous. Each one came to light only when a reviewer chose to mutate the code by hand.
+
+The reviewer in this port cannot do that on purpose: both reviewer files tell it never to run tests or execute code. It can read a test and judge what the test asserts, but only something that runs the test can show it going red, and the implementer is the one already running tests at Step 4. So the implementer breaks each new or changed test, records what it saw, and the reviewer checks that record against the diff.
+
+Two details of the procedure come from how it fails. Porcelain status alone cannot prove a restore, because at Step 4 the files are already modified and a leftover break inside one of them leaves its status line unchanged, so the snapshot also hashes the diff and the untracked files. And `grep -c` counts lines rather than occurrences, so a phrase that appears twice on one line, as in a markdown link whose text and target match, looks unique while a one-site break leaves the test green.
+
+The entries are the implementer's own observation, and the reviewer cannot re-run them; it checks only that each break is plausible against what the test asserts. What the rule takes away is the quiet case of a new test no one ever saw fail.
