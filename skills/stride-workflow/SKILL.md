@@ -91,9 +91,13 @@ Whether you arrive here from a creation request or the build loop, **a claim fai
 
 ## Step 1: Task Discovery
 
-**Call `GET /api/tasks/next` to find the next available task.**
+**Call `GET /api/tasks/next?response_view=slim` to find the next available task.** The answer is a short summary of one task: `id`, `identifier`, `title`, `type`, `status`, `priority`, `complexity`, `dependencies`, `created_by_agent`, `parent_id` and `claim_expires_at`. Keep its `identifier` for the claim. A server too old to know the slim view ignores the parameter and sends the whole task back; carry on exactly as below either way, because nothing here hinges on which shape arrived.
 
-Review the returned task completely:
+The summary tells you which task is next; it is not something to plan from. Everything you plan from is the full task body, and where that body comes from depends on who runs `## before_doing`:
+- **With the hook bridge loaded**, the claim in Step 2 hands it to you: that response's `data` is the complete task.
+- **Without the hook bridge** (skills only), the hook goes ahead of the claim, so fetch the body now with `GET /api/tasks/:id`, putting the summary's numeric `id` in the path, and work from its `data`.
+
+Go through that full body field by field:
 - `title`, `description`, `why`, `what`
 - `acceptance_criteria` -- your definition of done
 - `key_files` -- which files you'll modify
@@ -105,11 +109,13 @@ Review the returned task completely:
 - `complexity` -- drives the decision matrix in Step 3
 - `technical_details` -- optional free-form technical context the author/enricher recorded (not a scored field; may be empty)
 
-**Enrichment check:** If `key_files` is empty OR `testing_strategy` is missing OR `verification_steps` is empty OR `acceptance_criteria` is blank, activate `stride-enriching-tasks` to populate these fields before proceeding. Well-specified tasks skip enrichment.
+**Enrichment check (full body only):** If `key_files` is empty OR `testing_strategy` is missing OR `verification_steps` is empty OR `acceptance_criteria` is blank, activate `stride-enriching-tasks` to populate these fields. When it runs depends on where the body came from: with the hook bridge, as soon as the claim returns and before Step 3; without it, here, on what `GET /api/tasks/:id` returned, ahead of Step 2's `before_doing`. Well-specified tasks skip enrichment.
 
 ---
 
 ## Step 2: Claim the Task
+
+**Who runs `## before_doing` sets the order.** With the hook bridge loaded, send the claim with the placeholder `before_doing_result` that `stride-claiming-tasks` shows; the bridge runs the hook once the claim returns, so steps 1-4 below are its job, and the paragraph after the capture pattern applies to you. Without the hook bridge, you reach this step already holding the `GET /api/tasks/:id` body from Step 1, already through the enrichment check, and all five steps are yours.
 
 1. Read `.stride.md` `## before_doing` section
 2. Execute each command line one at a time via shell -- no permission prompts, no confirmation
@@ -137,6 +143,8 @@ EXIT_CODE=$?
 END_TIME=$(date +%s%3N)
 DURATION=$((END_TIME - START_TIME))
 ```
+
+**After the claim, with the hook bridge:** the response's `data` is the full task. Apply the Step 1 enrichment check to it now, ahead of Step 3. If the check sends the task to enrichment, the PATCH leaves the bridge's saved task file (Hooks Reference) holding the sparse version. So once you have re-fetched the task with `GET /api/tasks/:id`, delete that file. The bridge names it by one test: the claim's `identifier` when the whole value is letters, digits, `_` or `-` (1 to 64 characters), else its numeric `id`, else nothing is saved at all. Take the name only from a value that passes, quote the path in single quotes (`rm -f '<session cwd>/.stride/.task-<name>.json'`), and never paste a value that fails into a command; when neither passes there is no file to delete. Steps 3 and 5 then find no task file and pass the enriched fields inline.
 
 ---
 
@@ -776,13 +784,16 @@ STEP 0: Prerequisites
   |
   v
 STEP 1: Task Discovery
-  GET /api/tasks/next
-  Review task details
-  Needs enrichment? --> YES --> Activate stride-enriching-tasks
+  GET /api/tasks/next?response_view=slim  (summary; an older server's full task is fine)
+  Hook bridge loaded? --> YES --> full body comes with the Step 2 claim
+                      --> NO  --> fetch the full body: GET /api/tasks/:id
+                                  Needs enrichment? --> YES --> Activate stride-enriching-tasks
   |
   v
 STEP 2: Claim
-  Execute before_doing hook manually, then POST /api/tasks/claim
+  Hook bridge: POST /api/tasks/claim (bridge runs before_doing), then
+               claim body needs enrichment? --> YES --> Activate stride-enriching-tasks
+  No bridge:   Execute before_doing hook manually, then POST /api/tasks/claim
   |
   v
 STEP 3: Explore (Decision Matrix)
@@ -843,8 +854,10 @@ STEP 8: Post-Completion
 ```
 PI WORKFLOW:
 ├─ 0. Prerequisites: .stride_auth.md + .stride.md exist
-├─ 1. Discovery: GET /api/tasks/next, review task, enrich if needed
-├─ 2. Claim: Execute before_doing manually, then POST /api/tasks/claim
+├─ 1. Discovery: GET /api/tasks/next?response_view=slim (summary; older full reply is fine);
+│     no hook bridge → GET /api/tasks/:id for the body, enrich if needed, before before_doing
+├─ 2. Claim: hook bridge → POST /api/tasks/claim (bridge runs before_doing), then enrich
+│     the claim body if needed; no bridge → run before_doing by hand, then POST claim
 ├─ 3. Explore (check decision matrix):
 │     ├─ Goal/large undecomposed → Decompose (agent or manual) → Claim children
 │     ├─ Small, 0-1 key_files → Skip to Step 4

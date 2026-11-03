@@ -183,11 +183,11 @@ curl -fsSL https://raw.githubusercontent.com/cheezy/stride-pi/main/install.sh | 
 
 This installs a TypeScript Pi extension that registers a `dispatch_agent(agent, prompt)` tool. When you invoke it, the tool spawns an isolated `pi -p` subprocess with `PI_CODING_AGENT_DIR` pointed at an ephemeral config directory and `--append-system-prompt` pointed at the per-agent SYSTEM.md. The subagent runs in its own context window, returns structured output, and exits — your main agent's context stays clean.
 
-Five agents are registered: `stride-task-enricher`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The `stride-subagent-workflow` skill documents when to use each (`task-enricher` runs **before claiming** a sparse task; the rest run after claim). The `stride-task-reviewer` agent emits a `schema_version` 1.7 structured review block (`status`, `issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]` with per-entry `status` enum `met`/`not_met`/`not_applicable` and full-checklist emission, and per-section `testing_strategy`/`patterns`/`pitfalls`/`security_considerations` verdicts).
+Five agents are registered: `stride-task-enricher`, `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The `stride-subagent-workflow` skill documents when to use each (`task-enricher` runs on a sparse task's complete body, ahead of any work; the rest run after claim). The `stride-task-reviewer` agent emits a `schema_version` 1.7 structured review block (`status`, `issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]` with per-entry `status` enum `met`/`not_met`/`not_applicable` and full-checklist emission, and per-section `testing_strategy`/`patterns`/`pitfalls`/`security_considerations` verdicts).
 
 ### Fallback: inline skills (Phase 2a)
 
-If the extensions aren't installed (you passed `--no-extensions`, or an older Pi version that can't load the extension), five inline skills provide the same functionality without the isolation: `stride-enriching-tasks` (pre-claim enrichment), `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
+If the extensions aren't installed (you passed `--no-extensions`, or an older Pi version that can't load the extension), five inline skills provide the same functionality without the isolation: `stride-enriching-tasks` (fills in a thin task), `stride-task-explorer`, `stride-task-reviewer`, `stride-task-decomposer`, `stride-hook-diagnostician`. The main agent runs these in its own context rather than dispatching to a subprocess. The work and output format are identical — only the isolation changes.
 
 ### Which should you use?
 
@@ -234,7 +234,7 @@ All five timeouts match `HOOK_TIMEOUTS_MS` in `extensions/hook-bridge/index.ts` 
 
 ### Loop continuation (advisory, not a gate)
 
-After a completion that recorded `needs_review: false`, the bridge injects one message at the start of your **next** turn naming the task that is claimable now. It reads the completion record at `.stride/.loop-state.json` and asks `GET /api/tasks/next` for the identifier.
+After a completion that recorded `needs_review: false`, the bridge injects one message at the start of your **next** turn naming the task that is claimable now. It reads the completion record at `.stride/.loop-state.json` and asks `GET /api/tasks/next?response_view=slim` for the identifier, which is the only field it reads.
 
 **This advises; it cannot enforce.** Pi's end-of-turn events (`turn_end`, `agent_end`) register with no result type, so no extension can refuse a Pi session ending — unlike Claude Code, whose `Stop` hook can. By the time this can speak the previous turn is already over, and if you never prompt again it never fires. The model is also free to ignore the message. See the Addendum in `docs/ADR-002-hook-mechanism.md` for the full reasoning.
 

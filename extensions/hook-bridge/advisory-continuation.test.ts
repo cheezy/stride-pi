@@ -20,6 +20,7 @@ import { LOOP_STATE_FILE, writeLoopState } from "./loop-state.ts";
 import { STRIDE_AUTH_FILE } from "./stride-auth.ts";
 import {
   ADVISORY_COUNTER_FILE,
+  ADVISORY_NEXT_PATH,
   advisoryIdentifierShaped,
   advisoryMaxInjections,
   decideAdvisoryContinuation,
@@ -140,7 +141,7 @@ describe("decideAdvisoryContinuation", () => {
       assert.equal(d.text.includes("W2151"), false);
       assert.equal(d.injectionCount, 1);
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].url, "https://stride.test/api/tasks/next");
+      assert.equal(calls[0].url, "https://stride.test/api/tasks/next?response_view=slim");
       const headers = calls[0].init?.headers as Record<string, string>;
       assert.equal(headers.Authorization, `Bearer ${AUTH.token}`);
       assert.equal(counterText(dir), "W2151 1\n");
@@ -375,5 +376,90 @@ describe("decideAdvisoryContinuation", () => {
       const headers = calls[0].init?.headers as Record<string, string>;
       assert.equal(headers.Authorization, `Bearer ${fakeProd}`);
     });
+  });
+});
+
+// (W2612) The slim summary is the server's 11-key answer to
+// ?response_view=slim; the full body is what a server that predates the
+// parameter returns instead. The advisory reads only `identifier` from either.
+const slimBody = (identifier: string, dependencies: unknown = []) => ({
+  data: {
+    id: 7904, identifier, title: "A task", type: "work", status: "open",
+    priority: "high", complexity: "medium", dependencies,
+    created_by_agent: "An agent", parent_id: 7903, claim_expires_at: null,
+  },
+});
+const fullBody = (identifier: string) => ({
+  data: {
+    ...slimBody(identifier).data,
+    description: "Long free text the advisory never reads.",
+    key_files: [{ file_path: "lib/a.ex", note: "n", position: 0 }],
+    testing_strategy: { unit_tests: ["t"], integration_tests: [], manual_tests: [] },
+    acceptance_criteria: "One\nTwo",
+  },
+  current_skills_version: "1.0",
+});
+
+describe("slim next view (W2612)", () => {
+  it("the next call requests ?response_view=slim on the configured origin", async () => {
+    await withTmp(async (dir) => {
+      completed(dir, "W2151");
+      const { fetch, calls } = stubFetch(200, slimBody("W2152"));
+      await decideAdvisoryContinuation({ cwd: dir, sessionId: SESSION, fetch, auth: AUTH, env: {} });
+      assert.equal(ADVISORY_NEXT_PATH, "/api/tasks/next?response_view=slim");
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, `${AUTH.apiBase}/api/tasks/next?response_view=slim`);
+      assert.equal(calls[0].init?.method, "GET");
+    });
+  });
+
+  it("a slim response with an identifier advises continuing", async () => {
+    for (const deps of [[], ["W1"], null]) {
+      await withTmp(async (dir) => {
+        completed(dir, "W2151");
+        const d = await decideAdvisoryContinuation({
+          cwd: dir, sessionId: SESSION, fetch: stubFetch(200, slimBody("W2152", deps)).fetch,
+          auth: AUTH, env: {},
+        });
+        assert.equal(d.inject, true, `dependencies ${JSON.stringify(deps)}`);
+        if (!d.inject) return;
+        assert.equal(d.identifier, "W2152");
+      });
+    }
+  });
+
+  it("a full older-server response still parses", async () => {
+    await withTmp(async (dir) => {
+      completed(dir, "W2151");
+      const d = await decideAdvisoryContinuation({
+        cwd: dir, sessionId: SESSION, fetch: stubFetch(200, fullBody("W2152")).fetch,
+        auth: AUTH, env: {},
+      });
+      assert.equal(d.inject, true);
+      if (!d.inject) return;
+      assert.equal(d.identifier, "W2152");
+      // Nothing beyond the identifier reaches the advice text.
+      assert.equal(d.text.includes("Long free text"), false);
+      assert.equal(d.text.includes("lib/a.ex"), false);
+    });
+  });
+
+  it("an empty slim response reports no claimable task", async () => {
+    const cases: Array<[number, unknown, string]> = [
+      [404, { error: "No tasks available" }, "api_non_200"],
+      [200, { data: null }, "api_body_unusable"],
+      [200, {}, "api_body_unusable"],
+    ];
+    for (const [status, body, reason] of cases) {
+      await withTmp(async (dir) => {
+        completed(dir, "W2151");
+        const d = await decideAdvisoryContinuation({
+          cwd: dir, sessionId: SESSION, fetch: stubFetch(status, body).fetch, auth: AUTH, env: {},
+        });
+        assert.deepEqual(d, { inject: false, reason }, `${status} ${JSON.stringify(body)}`);
+        // Nothing to advise, so the counter is never touched.
+        assert.equal(counterText(dir), null);
+      });
+    }
   });
 });

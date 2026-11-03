@@ -48,6 +48,15 @@ export const ADVISORY_CUSTOM_TYPE = "stride-advisory-continuation";
 export const ADVISORY_TIMEOUT_MS = 5_000;
 
 /**
+ * (W2612) The discovery path, asking for the slim summary. Only the
+ * identifier is read from it, and that key is in both shapes: a server that
+ * predates `response_view` ignores the parameter and returns the full task,
+ * which parses the same way. A fixed literal appended to the configured
+ * origin; no task text ever reaches the URL.
+ */
+export const ADVISORY_NEXT_PATH = "/api/tasks/next?response_view=slim";
+
+/**
  * A closed vocabulary of skip reasons. Closed on purpose: these values are the
  * only thing this module reports about a refusal, and a union of string
  * literals cannot interpolate a token, a URL, or a response body by
@@ -208,7 +217,7 @@ export async function nextClaimableIdentifier(opts: {
   const { fetch, apiBase, token, signal } = opts;
   let response: Response;
   try {
-    response = await fetch(`${apiBase}/api/tasks/next`, {
+    response = await fetch(`${apiBase}${ADVISORY_NEXT_PATH}`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,

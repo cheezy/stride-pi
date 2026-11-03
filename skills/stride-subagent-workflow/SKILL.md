@@ -17,7 +17,7 @@ Sub-skills are dispatched by the orchestrator only.
 **If you just claimed a Stride task and are about to start implementation, you MUST activate this skill first.**
 
 This skill contains the decision matrix that determines which inline skills to invoke:
-- `stride-task-enricher` — Enrich a sparse task with key_files, patterns, testing_strategy, security_considerations, etc. **before claiming**
+- `stride-task-enricher` — Enrich a sparse task with key_files, patterns, testing_strategy, security_considerations, etc. **before work starts** (after the claim with the hook bridge, before `before_doing` without it)
 - `stride-task-explorer` — Read key_files and discover patterns before coding
 - `stride-task-reviewer` — Review your changes against acceptance criteria before completion
 - `stride-task-decomposer` — Break goals into properly-sized subtasks
@@ -63,7 +63,7 @@ If `dispatch_agent` is not available (extension not installed, older Pi version,
 
 | Role | Inline skill | When |
 |---|---|---|
-| Enrichment | `stride-enriching-tasks` | **Before claim**, when the task is sparse (empty `key_files` / missing `testing_strategy` / empty `verification_steps` / blank `acceptance_criteria`) |
+| Enrichment | `stride-enriching-tasks` | **Before any work**, on the full task body (the claim response with the hook bridge; `GET /api/tasks/:id` before the claim without it), when the task is sparse (empty `key_files` / missing `testing_strategy` / empty `verification_steps` / blank `acceptance_criteria`) |
 | Exploration | `stride-task-explorer` | After claim, when the decision matrix below says Run in its column |
 | Code review | `stride-task-reviewer` | After implementation, before `after_doing`, when the decision matrix below says Run in its column |
 | Goal decomposition | `stride-task-decomposer` | When a claimed task is a goal or large-undecomposed |
@@ -121,9 +121,9 @@ Use this matrix to determine which inline skills to invoke based on task attribu
 - If the task is small with 0-1 key_files, skip all inline skills and code directly.
 - Otherwise, at minimum run the explorer and reviewer.
 
-## Pre-Claim: Enrichment (Sparse Tasks)
+## Enrichment (Sparse Tasks)
 
-**When:** During the orchestrator's Step 1 enrichment check, BEFORE claiming. Triggered when the task has empty `key_files` OR missing `testing_strategy` OR empty `verification_steps` OR blank `acceptance_criteria`.
+**When:** During the orchestrator's enrichment check (defined in `stride-workflow` Step 1, and run after the Step 2 claim on the bridge path), which reads the full task body: with the hook bridge that is the claim response, checked right after the claim; without it, `GET /api/tasks/:id`, checked before `before_doing` and the claim. Triggered when the task has empty `key_files` OR missing `testing_strategy` OR empty `verification_steps` OR blank `acceptance_criteria`.
 
 **What to do (dual-path, same as the other roles):**
 - **Preferred — `dispatch_agent`:** `dispatch_agent({agent: "stride-task-enricher", prompt: "<sparse task fields>"})` to run the enricher in an isolated subprocess.
@@ -139,7 +139,7 @@ Either path returns a single JSON object containing the enriched fields: `key_fi
 **After enrichment:**
 1. Submit the returned JSON via `PATCH /api/tasks/:id` to populate the missing fields on the existing task
 2. Re-fetch the task with `GET /api/tasks/:id` to verify all required fields are populated
-3. Proceed to claim the task as normal — the rest of the matrix below applies once it's claimed
+3. Pick up where the check ran: with the hook bridge the task is already claimed, so delete its now-stale task file (`stride-workflow` Step 2) and continue with the matrix below; without it, go on to `before_doing` and the claim, and the matrix applies once it's claimed
 
 **Skip enrichment when:**
 - The task is already well-specified (all four trigger fields populated)

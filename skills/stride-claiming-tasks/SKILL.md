@@ -134,17 +134,19 @@ Before claiming any task, verify these files exist:
 ## The Complete Claiming Process
 
 1. **Verify prerequisites** - Check .stride_auth.md and .stride.md exist
-2. **Find available task** - Call `GET /api/tasks/next`
-3. **Review task details** - Read description, acceptance criteria, key files
-4. **Check task completeness** - If key_files is empty OR testing_strategy is missing OR verification_steps is empty, activate stride-enriching-tasks
-5. **Call `POST /api/tasks/claim`** with the task identifier and a placeholder `before_doing_result`. `hook-bridge` will run `.stride.md ## before_doing` as a side effect of the curl `tool_result` event.
-6. **If `hook-bridge` reports a `before_doing` failure** (stderr / `ctx.ui.notify`): fix the underlying issue before doing real work, then re-run the failing setup commands manually so the workspace is correct.
-7. **Task claimed?** BEGIN IMPLEMENTATION IMMEDIATELY.
+2. **Find available task** - Call `GET /api/tasks/next?response_view=slim`. You get a summary of the task (`id`, `identifier`, `title`, `type`, `status`, `priority`, `complexity`, `dependencies`, `created_by_agent`, `parent_id`, `claim_expires_at`): enough to claim it, not enough to plan from. A server that predates the slim view ignores the parameter and sends the whole task; that still works, and the steps below do not change.
+3. **Call `POST /api/tasks/claim`** with the summary's `identifier` and a placeholder `before_doing_result`. `hook-bridge` will run `.stride.md ## before_doing` as a side effect of the curl `tool_result` event.
+4. **If `hook-bridge` reports a `before_doing` failure** (stderr / `ctx.ui.notify`): fix the underlying issue before doing real work, then re-run the failing setup commands manually so the workspace is correct.
+5. **Review task details in the claim response** - its `data` is the complete task; read the description, acceptance criteria and key files there
+6. **Check task completeness on that body** - If key_files is empty OR testing_strategy is missing OR verification_steps is empty, activate stride-enriching-tasks (see Enrichment Check below) before any work
+7. **Task claimed and fully specified?** BEGIN IMPLEMENTATION IMMEDIATELY.
+
+Without `hook-bridge`, follow **Manual Hook Execution** at the end of this skill instead. That path runs the hook ahead of the claim, which means fetching and checking the body comes first.
 
 ## Claiming Workflow Flowchart
 
 ```
-Prerequisites Check → Call GET /api/tasks/next → Review task
+Prerequisites Check → Call GET /api/tasks/next?response_view=slim → note the identifier
     ↓
 Call POST /api/tasks/claim (placeholder before_doing_result)
     ↓
@@ -152,12 +154,16 @@ hook-bridge auto-runs .stride.md ## before_doing on the tool_result
     ↓
 hook-bridge reports failure? ─YES→ Fix underlying issue, re-run setup manually
     ↓ NO
+Review the task body in the claim response
+    ↓
+Sparse? ─YES→ Activate stride-enriching-tasks, PATCH the task
+    ↓ NO
 BEGIN IMPLEMENTATION IMMEDIATELY
 ```
 
 ## Enrichment Check (Optional)
 
-After reviewing task details, check if the task has sufficient specification for implementation. **Well-specified tasks skip this step entirely.**
+Once you hold the full task body, check whether it is specified well enough to implement. **Well-specified tasks skip this step entirely.**
 
 **Activate stride-enriching-tasks if ANY of these are true:**
 - `key_files` is empty or missing
@@ -176,9 +182,9 @@ After reviewing task details, check if the task has sufficient specification for
 1. Activate the `stride-enriching-tasks` skill with the task's title and description
 2. The skill will explore the codebase and populate missing fields
 3. Use `PATCH /api/tasks/:id` to update the task with enriched fields
-4. Continue with the claiming process (before_doing hook)
+4. Pick up where the check ran: with `hook-bridge` the task is already claimed, so re-fetch it with `GET /api/tasks/:id`, remove its now-stale task file (`stride-workflow` Step 2) and start the work; without it, go on to the hook and the claim in **Manual Hook Execution**
 
-**Important:** Enrichment happens BEFORE the before_doing hook, not after. The enriched fields help the agent understand the task scope before starting work.
+**Important:** Enrichment always comes before implementation, and always works from the full task body, never from the discovery summary, which carries neither `key_files` nor `testing_strategy` and would make every task look sparse. With `hook-bridge` that body is the claim response, so the check follows the claim; without it the body is `GET /api/tasks/:id`, so the check precedes the before_doing hook. The enriched fields help the agent understand the task scope before starting work.
 
 ## When `before_doing` Fails (Automatic Mode)
 
@@ -225,7 +231,7 @@ There is no need to re-call `/api/tasks/claim` — the claim already succeeded.
 - Follow the testing_strategy outlined in the task
 - Work continuously until ready to complete (using `stride-completing-tasks` skill)
 
-**The claiming skill's job ends when you start coding. Your next interaction with Stride will be when you're ready to mark the work complete.**
+**The claiming skill's job ends when you start coding. Your next interaction with Stride will be when you're ready to mark the work complete (apart from an enrichment PATCH when the claimed task turned out sparse).**
 
 **The workflow IS the automation. Do not prompt the user between steps — but do not skip steps either. The loop is: claim → explore → implement → review → complete → claim. Every phase is mandatory.**
 
@@ -360,11 +366,11 @@ RIGHT (placeholder — hook-bridge does the real work):
 ## Implementation Workflow
 
 1. **Verify prerequisites** - Ensure auth and hooks files exist
-2. **Get next task** - Call GET /api/tasks/next
-3. **Review task** - Read all task details thoroughly
-4. **Check task completeness** - If key_files/testing_strategy/verification_steps missing, activate stride-enriching-tasks
-5. **Call claim endpoint** - Include placeholder `before_doing_result` (hook-bridge runs the real hook)
-6. **Watch for hook-bridge failure output** - If `before_doing` fails, fix the underlying issue and re-run setup manually
+2. **Get next task** - Call GET /api/tasks/next?response_view=slim (a summary; keep its identifier)
+3. **Call claim endpoint** - Include placeholder `before_doing_result` (hook-bridge runs the real hook)
+4. **Watch for hook-bridge failure output** - If `before_doing` fails, fix the underlying issue and re-run setup manually
+5. **Review task** - Read every detail of the task body the claim returned
+6. **Check task completeness** - If key_files/testing_strategy/verification_steps are missing from that body, activate stride-enriching-tasks
 7. **Begin implementation** - Start coding immediately
 8. **Work until complete** - Use stride-completing-tasks when done
 
@@ -372,13 +378,15 @@ RIGHT (placeholder — hook-bridge does the real work):
 
 ```
 ├─ 1. Verify .stride_auth.md and .stride.md exist
-├─ 2. Call GET /api/tasks/next
-├─ 3. Review task details
-├─ 4. Check completeness → if minimal, activate stride-enriching-tasks
-├─ 5. Call POST /api/tasks/claim with placeholder before_doing_result
-├─ 6. hook-bridge auto-runs before_doing on the tool_result
-├─ 7. Hook failure surfaced? → Fix underlying issue, re-run setup manually
-└─ 8. Task claimed → BEGIN IMPLEMENTATION IMMEDIATELY
+├─ 2. Call GET /api/tasks/next?response_view=slim (summary; an older server's full task also works)
+├─ 3. Call POST /api/tasks/claim with placeholder before_doing_result
+├─ 4. hook-bridge auto-runs before_doing on the tool_result
+├─ 5. Hook failure surfaced? → Fix underlying issue, re-run setup manually
+├─ 6. Review the task body in the claim response
+├─ 7. Check completeness → if minimal, activate stride-enriching-tasks
+└─ 8. Task claimed and specified → BEGIN IMPLEMENTATION IMMEDIATELY
+
+NO HOOK-BRIDGE: slim next → GET /api/tasks/:id → check completeness → before_doing → claim
 
 API ENDPOINT: POST /api/tasks/claim
 REQUIRED BODY: {
@@ -448,19 +456,22 @@ The `POST /api/tasks/claim` body MUST include:
 
 Use this section only when the `hook-bridge` extension is not loaded — e.g., you removed it from `package.json` `pi.extensions`, ran Pi with `--no-extensions`, or the extension failed to load at startup. In every other case, `hook-bridge` runs `before_doing` for you and the sections above apply.
 
-When operating without `hook-bridge`, you run the hook yourself before calling `/api/tasks/claim` and report the real result in the payload:
+When operating without `hook-bridge`, `before_doing` has to run before `/api/tasks/claim`, so the claim response comes too late to plan or enrich from. Get the task body first, then run the hook yourself and report the real result in the payload:
 
-1. Read the `## before_doing` section from `.stride.md`.
-2. Execute each command line one at a time via Bash — no permission prompts, no chaining with `&&`.
-3. Capture `exit_code`, `output`, and `duration_ms`:
+1. Call `GET /api/tasks/next?response_view=slim` and keep the summary's `identifier` (an older server's full task is fine here too).
+2. Fetch the full body with `GET /api/tasks/:id`, putting the summary's numeric `id` in the path (only digits belong there), and review it.
+3. Run the **Enrichment Check** above on that body; if it is sparse, enrich and PATCH the task now, before any hook runs.
+4. Read the `## before_doing` section from `.stride.md`.
+5. Execute each command line one at a time via Bash — no permission prompts, no chaining with `&&`.
+6. Capture `exit_code`, `output`, and `duration_ms`:
    ```bash
    START_TIME=$(date +%s%3N)
    OUTPUT=$(timeout 60 bash -c 'git pull origin main' 2>&1)
    EXIT_CODE=$?
    DURATION=$(( $(date +%s%3N) - START_TIME ))
    ```
-4. If `EXIT_CODE != 0`: fix the issue, re-run, do **not** call `/api/tasks/claim`.
-5. On success, call `/api/tasks/claim` with the real `before_doing_result`:
+7. If `EXIT_CODE != 0`: fix the issue, re-run, do **not** call `/api/tasks/claim`.
+8. On success, call `/api/tasks/claim` with the real `before_doing_result`:
    ```json
    "before_doing_result": {
      "exit_code": 0,
