@@ -186,8 +186,9 @@ The decomposer will return an ordered list of child tasks with:
 - The task's `patterns_to_follow` text
 - The task's `where_context` text
 - The task's `testing_strategy` object
+- The task's `description`, `technical_details` and `inserted_at`, which the explorer's statement check reads
 
-The explorer will return a structured summary of: each key file's current state, related test files, existing patterns found, and module APIs to reuse.
+The explorer will return a structured summary that opens with `Task statements the current code contradicts` (its check of the task's own claims against the code, each with a `verified_by` command), followed by each key file's current state, related test files, existing patterns found, and module APIs to reuse.
 
 While the explorer works, this port simply waits: a `dispatch_agent` call keeps the turn until the subagent exits, so you get no turn to plan in until its summary arrives (a read sent in the same message runs alongside it, but its result arrives with that summary), and the inline skill runs in your own context (evidence in the stride-pi repository's `docs/HOOK_RESEARCH.md`, W2611).
 
