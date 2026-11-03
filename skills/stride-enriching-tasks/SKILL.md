@@ -337,7 +337,7 @@ All existing tests still pass
 
 If exploration surfaced concrete technical context that doesn't fit the structured fields — data shapes, gotchas, key decisions, or reference links — record it in an optional free-form `technical_details` object. Unlike the structured fields, it has no fixed keys: use whatever keys best describe what you found. This is an optional add-on beyond the six exploration steps, not a seventh required step.
 
-- **Optional and never fabricated.** Populate it only with context you actually discovered during Phase 2. When there is nothing substantive to capture, leave it as `{}` — a blank `technical_details` is expected and perfectly fine.
+- **Optional and never fabricated.** Populate it only with context you actually discovered during Phase 2, with one exception: the `open_questions` array that the cross-field consistency pass writes. When there is nothing substantive to capture, leave it as `{}` — a blank `technical_details` is expected and perfectly fine.
 - **Not review_queue-scored.** `technical_details` is NOT one of the five review_queue-scored fields (`acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow`), so a blank value is never a scoring gap or an empty pill — never bump complexity or pad other fields to compensate for an empty `technical_details`.
 - **No secrets.** Because the object is free-form, never record tokens, passwords, credentials, or other secrets in it.
 
@@ -382,6 +382,8 @@ Combine all discovered fields into the final task specification.
 - [ ] `needs_review` is set to `false`
 - [ ] No invented file paths — every entry is a path located via Grep, Glob, or Read
 - [ ] All 17 fields above were considered for this task (none silently skipped)
+
+**Cross-field consistency pass.** After the checklist, run the six non-blocking checks in `stride-task-enricher` Phase 4 (the same six are in the installed `stride-task-decomposer` skill, Step 7) and record anything you cannot evaluate in `technical_details.open_questions`.
 
 ## Enrichment Workflow Flowchart
 

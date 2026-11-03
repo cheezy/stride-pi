@@ -114,6 +114,8 @@ Use BEFORE calling `POST /api/tasks` to create any Stride task or defect.
 - [ ] `required_capabilities` - Array of agent skills needed
 - [ ] `behaviour_test_matrix` - Sent by default: seven categories when `testing_strategy` lists a unit or integration test (see Embedded Object Formats)
 
+**Cross-field consistency pass.** Before you submit, check the fields against each other with the six non-blocking checks in `stride-task-enricher` Phase 4 (also `stride-task-decomposer` Step 7).
+
 ## Field Type Validations (CRITICAL)
 
 ### type field

@@ -251,6 +251,8 @@ CORRECT:
 - Include patterns_to_follow and pitfalls
 - Provide security_considerations as an array of strings
 
+**Cross-field consistency pass.** Before the batch goes out, every nested task gets the six non-blocking checks in `stride-task-decomposer` Step 7, whether or not the decomposer wrote it.
+
 **The five review_queue-scored fields are the minimum bar for every nested task:**
 
 - `acceptance_criteria` — newline-separated string; the implementing agent's definition of done. **Blank → empty pill on the review_queue.**
