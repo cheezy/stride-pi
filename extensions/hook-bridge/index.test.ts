@@ -5,7 +5,9 @@
  * so the test can import it without pulling in the @mariozechner/pi-coding-agent
  * runtime dependency required by index.ts. The rest of the hook bridge
  * is module-private to index.ts and exercised end-to-end via the Pi
- * runtime (no in-process integration tests at this layer).
+ * runtime. Where index.ts only wires Pi-free helpers together (the
+ * after_review cleanup, the W2607 task file), the wiring is rebuilt here
+ * from the same helpers and tested in-process.
  *
  * Mirrors the pattern in opencode's responseHasAfterGoal test block
  * (stride-opencode/src/index.test.ts, W794) — pure-function unit tests
@@ -16,11 +18,15 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import {
   responseHasAfterGoal,
   extractGoalEnvFromResult,
   AFTER_GOAL_ENV_KEYS,
+  toolOutputCandidates,
 } from "./after-goal-detector.ts";
 import { runAfterGoalAndCleanup } from "./after-goal-runner.ts";
 import {
@@ -34,6 +40,19 @@ import {
   resolveFinalizeBeforeDoingEnv,
   type TaskEnv,
 } from "./env-cache.ts";
+import { LOOP_STATE_FILE, clearLoopState } from "./loop-state.ts";
+import {
+  deleteTaskFileAfterCompletion,
+  deleteTaskFileForEnv,
+  recordClaimedTask,
+  runClaimSteps,
+  taskFilePath,
+} from "./task-file.ts";
+import {
+  CHANGED_FILES_SNAPSHOT_FILE,
+  CLAIM_DIRTY_BASELINE_FILE,
+  DIFF_UPLOAD_STATE_FILE,
+} from "./changed-files.ts";
 
 // Build the Claude/Gemini-style Bash-tool wrapper transport shape — used
 // when Pi's tool_result event delivers the raw response via event.content
@@ -508,5 +527,93 @@ describe("resolveFinalizeBeforeDoingEnv — post-section base + trust marker (D1
   it("does not mutate its arguments (pure)", () => {
     const existing: TaskEnv = Object.freeze({ TASK_ID: "3700", TASK_BASE_REF: "old" });
     assert.doesNotThrow(() => resolveFinalizeBeforeDoingEnv("newref", existing));
+  });
+});
+
+// (W2607) The claim branch and the after_review cleanup, wired exactly as
+// index.ts wires them -- minus index.ts, which imports the Pi runtime and
+// cannot be loaded here (the same approach as after-goal-runner.test.ts).
+describe("task file wiring (W2607)", () => {
+  function withTmpDir(fn: (dir: string) => Promise<void> | void): Promise<void> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stride-pi-index-"));
+    return Promise.resolve(fn(dir)).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
+  }
+
+  const claimContent = JSON.stringify({
+    data: { id: 7897, identifier: "W1", title: "t" },
+    hook: { name: "before_doing" },
+  });
+
+  function claimBranch(cwd: string, priorEnv: TaskEnv = {}, content = claimContent): void {
+    runClaimSteps({
+      clearPriorTask: () => {
+        for (const name of [
+          CHANGED_FILES_SNAPSHOT_FILE,
+          DIFF_UPLOAD_STATE_FILE,
+          CLAIM_DIRTY_BASELINE_FILE,
+        ]) {
+          fs.rmSync(path.join(cwd, name), { force: true });
+        }
+        clearLoopState(cwd);
+      },
+      recordTaskFile: () => {
+        recordClaimedTask(cwd, content, undefined, priorEnv);
+      },
+    });
+  }
+
+  function cleanupDeps(cwd: string, env: TaskEnv) {
+    return {
+      hasAfterGoal: () => false,
+      extractGoalEnv: () => ({}),
+      runAfterGoal: async () => null,
+      emitResult: () => {},
+      deleteEnvCache: () => {
+        deleteTaskFileForEnv(cwd, env);
+      },
+    };
+  }
+
+  it("the claim branch writes the file after the claim-time cleanup and after_review deletes it", async () => {
+    await withTmpDir(async (cwd) => {
+      fs.mkdirSync(path.join(cwd, ".stride"));
+      fs.writeFileSync(path.join(cwd, LOOP_STATE_FILE), "{}\n");
+      fs.writeFileSync(path.join(cwd, CHANGED_FILES_SNAPSHOT_FILE), "[]");
+
+      claimBranch(cwd);
+      assert.ok(!fs.existsSync(path.join(cwd, LOOP_STATE_FILE)), "prior loop state cleared");
+      assert.ok(!fs.existsSync(path.join(cwd, CHANGED_FILES_SNAPSHOT_FILE)), "prior diff cleared");
+      const taskFile = taskFilePath(cwd, "W1");
+      assert.ok(fs.existsSync(taskFile), "task file survives the cleanup");
+
+      const env: TaskEnv = { TASK_ID: "7897", TASK_IDENTIFIER: "W1" };
+      await runAfterGoalAndCleanup("before_review", true, "{}", undefined, cleanupDeps(cwd, env));
+      assert.ok(fs.existsSync(taskFile), "before_review keeps the task file");
+
+      await runAfterGoalAndCleanup("after_review", true, "{}", undefined, cleanupDeps(cwd, env));
+      assert.ok(!fs.existsSync(taskFile), "after_review deletes the task file");
+    });
+  });
+
+  it("a completion that needs no review deletes the file at before_review", async () => {
+    await withTmpDir((cwd) => {
+      claimBranch(cwd);
+      const done = JSON.stringify({ data: { identifier: "W1", needs_review: false } });
+      deleteTaskFileAfterCompletion(cwd, toolOutputCandidates(done, undefined), {
+        TASK_ID: "7897",
+        TASK_IDENTIFIER: "W1",
+      });
+      assert.ok(!fs.existsSync(taskFilePath(cwd, "W1")));
+    });
+  });
+
+  it("the next claim of another task deletes the previous task's file", async () => {
+    await withTmpDir((cwd) => {
+      claimBranch(cwd);
+      const next = JSON.stringify({ data: { id: 7898, identifier: "W2" } });
+      claimBranch(cwd, { TASK_ID: "7897", TASK_IDENTIFIER: "W1" }, next);
+      assert.ok(!fs.existsSync(taskFilePath(cwd, "W1")), "previous task's file deleted");
+      assert.ok(fs.existsSync(taskFilePath(cwd, "W2")), "new task's file written");
+    });
   });
 });

@@ -23,6 +23,10 @@
  *     metadata and written to `.stride-env-cache` so subsequent hook
  *     commands can reference $TASK_IDENTIFIER, $TASK_TITLE, etc.
  *   - The cache is deleted after after_review fires.
+ *   - (W2607) The same claim also saves the response's data object to
+ *     `.stride/.task-<IDENTIFIER>.json` (task-file.ts), after the claim-time
+ *     cleanup. It is deleted by a completion that needs no review, by the
+ *     after_review cleanup, or by the next claim of a different task.
  */
 
 import * as fs from "node:fs";
@@ -34,6 +38,12 @@ import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-a
 import { parseHookSection } from "./stride-md-parser.js";
 import { detectStrideHook, taskIdFromCommand, type StrideHookName } from "./curl-matcher.js";
 import { clearLoopState, recordLoopStateForCompletion } from "./loop-state.js";
+import {
+  deleteTaskFileAfterCompletion,
+  deleteTaskFileForEnv,
+  recordClaimedTask,
+  runClaimSteps,
+} from "./task-file.js";
 import {
   ADVISORY_CUSTOM_TYPE,
   decideAdvisoryContinuation,
@@ -146,20 +156,36 @@ export default function (pi: ExtensionAPI): void {
       // the ## before_doing section's `git pull` has moved HEAD to the
       // post-pull branch point — capturing it now would anchor the diff at the
       // PRE-pull commit and span another clone's pulled work (D132/W1678).
-      const resolved = resolveClaimEnvCache(taskEnv, loadEnvCache(ctx.cwd));
+      // (W2607) The identity the cache held BEFORE this claim, so the claim can
+      // delete the previous task's file once the cache no longer names it.
+      const priorEnv = loadEnvCache(ctx.cwd);
+      const resolved = resolveClaimEnvCache(taskEnv, priorEnv);
       if (resolved) writeEnvCache(ctx.cwd, resolved);
-      // Clear any leftover snapshot/upload-state/claim-dirty-baseline from a
-      // prior task so a stale 2xx cannot suppress the new task's before_review
-      // self-heal. Runs on the claim regardless of whether task env parsed. The
-      // claim-time dirty baseline is likewise (re)recorded post-section, hashed
-      // against the post-pull tree.
-      deleteDiffArtifacts(ctx.cwd);
-      // (W2150) A claim opens a new task window, so the previous completion's
-      // loop-state record is stale. Cleared unconditionally on ANY command
-      // matching the claim URL -- success or failure of the claim itself --
-      // exactly as stride-hook.sh does. The routing is by URL pattern, and an
-      // over-eager clear costs only a missed gate, which is the safe side.
-      clearLoopState(ctx.cwd);
+      runClaimSteps({
+        clearPriorTask: () => {
+          // Clear any leftover snapshot/upload-state/claim-dirty-baseline from a
+          // prior task so a stale 2xx cannot suppress the new task's before_review
+          // self-heal. Runs on the claim regardless of whether task env parsed. The
+          // claim-time dirty baseline is likewise (re)recorded post-section, hashed
+          // against the post-pull tree.
+          deleteDiffArtifacts(ctx.cwd);
+          // (W2150) A claim opens a new task window, so the previous completion's
+          // loop-state record is stale. Cleared unconditionally on ANY command
+          // matching the claim URL -- success or failure of the claim itself --
+          // exactly as stride-hook.sh does. The routing is by URL pattern, and an
+          // over-eager clear costs only a missed gate, which is the safe side.
+          clearLoopState(ctx.cwd);
+        },
+        // (W2607) Save the claimed task's data object to
+        // .stride/.task-<IDENTIFIER>.json -- AFTER the cleanup above, and before
+        // ## before_doing runs -- deleting the previous task's file first when
+        // it names a different task. A failed, truncated or identity-unproven
+        // claim writes nothing, deletes nothing, and leaves any earlier file
+        // untouched.
+        recordTaskFile: () => {
+          recordClaimedTask(ctx.cwd, event.content, event.details, priorEnv);
+        },
+      });
     }
 
     // before_review self-heal: if the after_doing finalize never landed the
@@ -210,6 +236,18 @@ export default function (pi: ExtensionAPI): void {
         taskId: taskIdFromCommand(command),
         sessionId,
       });
+      // (W2607) A completion that needs no review is never followed by
+      // /mark_reviewed, so the after_review cleanup would never delete the
+      // task file. Reads only this call's own output. Best-effort.
+      try {
+        deleteTaskFileAfterCompletion(
+          ctx.cwd,
+          toolOutputCandidates(event.content, event.details),
+          loadEnvCache(ctx.cwd),
+        );
+      } catch {
+        // intentional: never disturb the already-succeeded /complete call
+      }
     }
 
     const result = await runHook(hook, ctx);
@@ -258,6 +296,9 @@ export default function (pi: ExtensionAPI): void {
       runAfterGoal: (goalEnv) => runHook("after_goal", ctx, goalEnv),
       emitResult: (agResult) => process.stdout.write(formatHookResultJson(agResult) + "\n"),
       deleteEnvCache: () => {
+        // (W2607) The task file's name comes from the env cache, so delete it
+        // before the cache goes.
+        deleteTaskFileForEnv(ctx.cwd, loadEnvCache(ctx.cwd));
         deleteEnvCache(ctx.cwd);
         deleteDiffArtifacts(ctx.cwd);
       },
