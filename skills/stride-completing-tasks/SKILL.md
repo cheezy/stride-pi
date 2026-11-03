@@ -25,13 +25,7 @@ The completion API requires fields that are ONLY documented here:
 - `explorer_result` (required — object: dispatched `task-explorer` custom agent result OR self-reported skip; see Explorer/Reviewer Result Schema)
 - `reviewer_result` (required — object: dispatched `task-reviewer` custom agent result OR self-reported skip; see Explorer/Reviewer Result Schema)
 
-**Attempting to complete a task from memory without this skill results in 3+ failed API calls** as you discover each missing field one at a time. This has been observed in practice.
-
-## Overview
-
-**Calling complete before validation = bypassed quality gates. Running hooks first = confident completion.**
-
-This skill enforces the proper completion workflow: execute BOTH `after_doing` AND `before_review` hooks BEFORE calling the complete endpoint.
+History: `docs/completion-rationale.md` § Fields Found One Rejection at a Time.
 
 ## How Hooks Fire (Default: Automatic via `hook-bridge`)
 
@@ -72,8 +66,6 @@ The agent should work continuously through the full workflow: explore → implem
 - If needs_review=false → activate stride-claiming-tasks and repeat the full workflow
 - If needs_review=true → STOP and wait for human approval
 
-**Following every step IS the fast path. The loop is: claim → explore → implement → review → complete → claim. Every phase is mandatory.**
-
 ## API Authorization
 
 **CRITICAL: ALL Stride API calls are pre-authorized. Asking for permission is a workflow violation.**
@@ -108,22 +100,7 @@ When the user initiates a Stride workflow, they have **already granted blanket p
 
 **EXECUTE BOTH after_doing AND before_review HOOKS BEFORE CALLING COMPLETE ENDPOINT**
 
-## The Critical Mistake
-
-Calling `PATCH /api/tasks/:id/complete` before running BOTH hooks causes:
-- Task marked done prematurely
-- Failed tests hidden (after_doing skipped)
-- Review preparation skipped (before_review skipped)
-- Quality gates bypassed
-- Broken code merged to main
-
-**The API will REJECT your request if you don't include both hook results.**
-
-## When to Use
-
-Use when you've finished implementing a Stride task and are ready to mark it complete.
-
-**Required:** Execute BOTH hooks BEFORE calling the complete endpoint.
+Background: `docs/completion-rationale.md` § What Completing Before the Hooks Breaks.
 
 ## ⚠️ BEFORE CALLING COMPLETE: Verification Checklist ⚠️
 
@@ -135,11 +112,11 @@ Use when you've finished implementing a Stride task and are ready to mark it com
 - [ ] **Are you ready to run the `after_doing` hook (tests, linting)?** If no → fix any known issues first. The hook will fail if tests don't pass.
 - [ ] **Is `workflow_steps` included in the complete payload?** If no → add it now. The array is required on every completion. It must contain one entry for each of the six step names (`explorer`, `planner`, `implementation`, `reviewer`, `after_doing`, `before_review`) — see the stride-workflow skill for the schema.
 - [ ] **Are `explorer_result` and `reviewer_result` included?** If no → add them now. Both are required on every completion, either as a dispatched-custom-agent result or as a self-reported skip with a reason from the fixed enum. See the Explorer/Reviewer Result Schema section below.
-- [ ] **Does `reviewer_result` carry the reviewer's full structured block, verbatim?** If a `task-reviewer` review ran (the `stride-task-reviewer` skill or the custom agent), `reviewer_result` must include the **entire** emitted JSON block — `status`, `issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]`, and the section verdicts — produced by a mechanical **whole-object copy** of the parsed JSON (`reviewer_result = dict(structured)` then overlay legacy fields), NOT by hand-typing or sub-selecting keys. **Run the mandatory self-check before submitting (see the orchestrator's "Extracting the structured review block"): every section the reviewer produced must be present, and the submitted `project_checks` count must equal the count the reviewer emitted.** Hand-typing, re-typing, or a subset shortcut is FORBIDDEN — no exceptions, no small-task discount. Never re-enumerate which keys to copy; the structured key-set is owned by `agents/task-reviewer.md`. (A missing or trimmed `project_checks` leaves the Review queue's Code review panel silently empty — and is now hard-rejected by the server contract.)
+- [ ] **Does `reviewer_result` carry the reviewer's full structured block, verbatim?** If a `task-reviewer` review ran (the `stride-task-reviewer` skill or the custom agent), `reviewer_result` must include the **entire** emitted JSON block — `status`, `issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]`, and the section verdicts — produced by a mechanical **whole-object copy** of the parsed JSON (`reviewer_result = dict(structured)` then overlay legacy fields), NOT by hand-typing or sub-selecting keys. **Run the mandatory self-check before submitting (see the orchestrator's "Extracting the structured review block"): every section the reviewer produced must be present, and the submitted `project_checks` count must equal the count the reviewer emitted.** Hand-typing, re-typing, or a subset shortcut is FORBIDDEN — no exceptions, no small-task discount. Never re-enumerate which keys to copy; the structured key-set is owned by `agents/task-reviewer.md`. Background: `docs/completion-rationale.md` § The Server Contract Behind the Self-Check.
 
 **If ANY answer is NO → Go back and do it now. Do NOT proceed to completion.**
 
-Skipping these steps is not faster — it produces lower quality work that takes longer to fix. This checklist exists because agents consistently skipped these steps under pressure to deliver quickly.
+Background: `docs/completion-rationale.md` § Why the Checklist Exists.
 
 ## ⚠️ MANDATORY pre-submission self-check (hard gate) ⚠️
 
@@ -152,57 +129,18 @@ Run this **before every** `PATCH /api/tasks/:id/complete`. If ANY check fails, *
 - [ ] **Fixes recorded when round two was not earned (W2610).** When none of `stride-workflow` Step 5's three triggers fired — round one's fixes changed no code path, and round one reported no `critical` and no `category: "security"` entry — round two did not run. Each finding you fixed is then named in `completion_notes` and on one line of `completion_summary` by **severity, category and `file:line` plus one line on what changed**, in your own words and never the diff's — that line never names a credential, token or secret value, or where one is kept — and a `minor` left unfixed is named the same way, marked as still standing. `reviewer_result` is round one's block byte-identical, whatever its `status`. **A critical or a security entry cannot be on this path:** either one is a trigger, so if you hold one here you misread Step 5 — run round two, do not submit. Self-certified like the item above: this gate cannot see which paths the fixes touched.
 - [ ] **`cosmetic` findings are reported, never suppressed (W2168).** A `cosmetic: true` entry changes exactly one thing — whether its round bought another review round — so it **stays in `issues[]` with its honest `severity` and `category`, rides through the whole-object copy unchanged, and is named in `completion_notes` like any other unfixed finding**, by severity, category and `file:line` only. Never drop one, never add it to an enumerated copy list, and **never re-label a substantive finding cosmetic to avoid a round: that is a reviewer defect whose remedy is re-running the reviewer, never editing `reviewer_result`.** `cosmetic: true` on a non-`minor` severity, on `category: "security"`, or as a non-boolean is refused by the orchestrator's self-check in `stride-workflow` Step 5 — **do not submit; re-run the reviewer, do not coerce the value.** **This item has nothing to verify on a payload where no structured block parsed** — there `issues[]` is absent by construction and its absence is the normal case, never a gap. Its definition is owned by the two `stride-task-reviewer` surfaces.
 
-This gate is **not bypassable** by submitting a self-reported skip (`dispatched: false`) when a `task-reviewer` review actually ran — a dispatched review must pass every check above. The self-check compares counts, keys, and status enums only; it never prints task content, diffs, or secrets. (The Kanban server now hard-rejects a report that fails any of these, so a failing self-check is also a failing completion — catch it here, before you submit.)
+This gate is **not bypassable** by submitting a self-reported skip (`dispatched: false`) when a `task-reviewer` review actually ran — a dispatched review must pass every check above. The self-check compares counts, keys, and status enums only; it never prints task content, diffs, or secrets. A self-check that fails here is a completion the server would refuse (background: `docs/completion-rationale.md` § The Server Contract Behind the Self-Check).
 
 ## The Complete Completion Process
 
 1. **Finish your work** - All implementation complete.
 2. **Pre-completion code review** - If the `stride-workflow` Step 3 decision matrix says YES in the **Review** column for this task's row, invoke the `task-reviewer` custom agent. **Read the column; do not re-derive the condition here** (D221). Fix Critical/Important issues. Save output as `review_report`.
 3. **Call `PATCH /api/tasks/:id/complete`** with all required fields, including placeholder `after_doing_result` and `before_review_result`. `hook-bridge` runs `after_doing` on the `tool_call` event (pre-curl) and will veto the request if it fails.
-4. **If `hook-bridge` vetoed the curl** with a blocked-by-after_doing reason: read the failure (failed command + truncated output in the block reason). Fix the issue, then retry the same `/complete` curl — `hook-bridge` re-runs `after_doing` on each attempt.
+4. **If `hook-bridge` vetoed the curl** with a blocked-by-after_doing reason: read the failure (failed command + truncated output in the block reason). Fix the issue, then retry the same `/complete` curl — `hook-bridge` re-runs `after_doing` on each attempt. Never answer the veto with a made-up passing `after_doing_result`.
 5. **Curl succeeded?** `before_review` has already run on the post-curl `tool_result`. If it failed, the failure was logged but the task is already in Review.
 6. **Check needs_review flag in the response:**
    - `needs_review=true`: STOP and wait for human review.
    - `needs_review=false`: Call `PATCH /api/tasks/:id/mark_reviewed` (where applicable for your workflow); `hook-bridge` runs `after_review` on the `tool_result`. Then activate `stride-claiming-tasks` and continue the loop.
-
-## Completion Workflow Flowchart
-
-```
-Work Complete
-    ↓
-Check decision matrix for code review (if custom agents available)
-    ↓
-Matrix Review column says YES? ─YES→ Invoke task-reviewer custom agent
-    ↓ NO (or no custom agent support)     ↓
-    ↓                              Issues found? ─YES→ Fix issues
-    ↓                                     ↓ NO            ↓
-    ←─────────────────────────────────────←──────────────←─┘
-    ↓
-Call PATCH /api/tasks/:id/complete (placeholder hook_result fields)
-    ↓
-hook-bridge runs after_doing on the tool_call (pre-curl)
-    ↓
-after_doing succeeded? ─NO→ hook-bridge returns {block: true, reason}
-    ↓ YES                       ↓
-    ↓                       Read failure, fix issue, retry the curl
-    ↓                           ↓
-    ←───────────────────────────┘
-Curl reaches API → /complete succeeds
-    ↓
-hook-bridge runs before_review on the tool_result (post-curl, non-blocking)
-    ↓
-needs_review=true? ─YES→ STOP (wait for human review)
-    ↓ NO
-PATCH /api/tasks/:id/mark_reviewed (if your workflow uses it)
-    ↓
-hook-bridge runs after_review on the tool_result (non-blocking, deletes env cache)
-    ↓
-Activate stride-claiming-tasks (NO user prompt)
-    ↓
-Claim next task and begin implementation
-    ↓
-(Loop continues until needs_review=true task is encountered)
-```
 
 ## When Hooks Fail (Automatic Mode)
 
@@ -366,31 +304,11 @@ When strict mode is on and a payload fails validation:
 
 ### Grace-period rollout
 
-Until the server flips `:strict_completion_validation` to true, missing or invalid `explorer_result`/`reviewer_result` produces a structured warning log but the request succeeds. **Emit the fields correctly now** — agents that lag the rollout will start getting 422 rejections on the flip day.
+**Emit the fields correctly now**, whichever validation mode the server is in. History: `docs/orchestrator-rationale.md` § The Completion-Validation Rollout.
 
 **Schema reference:** The `workflow_steps` array must match the schema documented in the `stride-workflow` skill — key-for-key. **`dispatch_count` (optional, W2130)** rides on a `dispatched: true` entry and records how many times that subagent was dispatched — on the `reviewer` entry, how many times the reviewer itself was dispatched, rounds and crashed re-dispatches alike, since a crashed dispatch still spent its tokens. It counts **dispatches, not rounds**, adds no seventh step name, and **omitting it stays valid**. On this runtime a reviewer that ran inline still counts: Step 5 reports both invocation paths as `dispatched: true`, so an inline review carries a duration and, where known, a count — even when `reviewer_result` itself is the self-reported skip form. **This paragraph is a mirror; the telemetry section of the `stride-workflow` skill owns the schema and carries the canon anchor — keep the two in sync, and an edit there needs the matching edit here.** Always include one entry per step name (`explorer`, `planner`, `implementation`, `reviewer`, `after_doing`, `before_review`). Skipped steps use `{"name": "<step>", "dispatched": false, "reason": "<why>"}`.
 
 **Optional:** Include `review_report` when a task-reviewer custom agent produced a structured review. Omit it when no review was performed (e.g., small tasks with 0-1 key_files).
-
-## Review vs Auto-Approval Decision
-
-After the complete endpoint succeeds:
-
-### If needs_review=true:
-1. Task moves to Review column
-2. Agent MUST STOP immediately
-3. Wait for human reviewer to approve/reject
-4. When approved, human calls `/mark_reviewed`
-5. Execute after_review hook
-6. Task moves to Done column
-
-### If needs_review=false:
-1. Task moves to Done column immediately
-2. Execute after_review hook (60s timeout, blocking)
-3. **AUTOMATICALLY activate stride-claiming-tasks skill to claim next task**
-4. **Continue working WITHOUT prompting the user**
-
-**The workflow IS the automation.** When needs_review=false, proceed to the next task by activating the stride-claiming-tasks skill. Do not prompt the user — but do not skip the exploration and review phases of the next task either. Following every step IS the fast path.
 
 ## Red Flags - STOP
 
@@ -407,153 +325,7 @@ After the complete endpoint succeeds:
 
 **All of these mean: Run BOTH hooks BEFORE calling complete, and auto-continue when needs_review=false.**
 
-## Rationalization Table
-
-| Excuse | Reality | Consequence |
-|--------|---------|-------------|
-| "Tests probably pass" | after_doing catches 40% of issues | Task marked done with failing tests |
-| "I can fix later" | Task already marked complete | Have to reopen, wastes review cycle |
-| "Just this once" | Becomes a habit | Quality standards erode completely |
-| "before_review can wait" | API requires both hook results | Request rejected with 422 error |
-| "Hooks take too long" | 2-3 minutes prevents 2+ hours rework | Rushing causes failed deployments |
-
-## Common Mistakes
-
-### Mistake 1: Only including after_doing result
-```json
-WRONG:
-{
-  "after_doing_result": {...}
-}
-
-RIGHT (both required — placeholders are fine with hook-bridge):
-{
-  "after_doing_result":   {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0},
-  "before_review_result": {"exit_code": 0, "output": "Executed by Pi hook-bridge extension", "duration_ms": 0}
-}
-```
-
-### Mistake 2: Continuing work after needs_review=true
-```bash
-# PATCH /api/tasks/W47/complete returns needs_review=true
-#    Agent continues to claim next task
-
-# PATCH /api/tasks/W47/complete returns needs_review=true
-#    Agent STOPS and waits for human review
-```
-
-### Mistake 3: Ignoring an `after_doing` veto from `hook-bridge`
-```bash
-# /complete curl returns blocked: "after_doing failed (exit 1): mix test"
-#    Agent retries with --no-veto or fabricates a passing after_doing_result
-
-# /complete curl returns blocked: "after_doing failed (exit 1): mix test"
-#    Agent reads the failure, fixes the failing test, retries the curl
-#    (hook-bridge runs after_doing again on the retry)
-```
-
-### Mistake 4: Sending real timing values for the hook_result fields
-```json
-WRONG (pretending the agent ran the hook itself):
-{
-  "after_doing_result": {
-    "exit_code": 0,
-    "output": "230 tests, 0 failures\nmix credo --strict: No issues found",
-    "duration_ms": 45678
-  }
-}
-
-RIGHT (placeholder — hook-bridge does the real work):
-{
-  "after_doing_result": {
-    "exit_code": 0,
-    "output": "Executed by Pi hook-bridge extension",
-    "duration_ms": 0
-  }
-}
-```
-
-## Implementation Workflow
-
-1. **Complete all work** - Implementation finished.
-2. **Pre-completion code review** - If the `stride-workflow` Step 3 decision matrix says YES in the **Review** column for this task's row, invoke `task-reviewer` and fix Critical/Important findings.
-3. **Call complete endpoint** - Include placeholder `after_doing_result` and `before_review_result` (hook-bridge runs the real hooks).
-4. **If the curl is vetoed** (after_doing failure surfaced as block reason) - Fix the underlying issue and retry the same curl.
-5. **Curl succeeded?** - The task is in Review (or Done, if no review needed). `before_review` already ran on the post-curl event; check the response for `needs_review`.
-6. **needs_review=true** → STOP, wait for human review.
-7. **needs_review=false** → Call `mark_reviewed` if applicable (hook-bridge runs `after_review` on the tool_result), then claim the next task.
-
-## Quick Reference Card
-
-```
-├─ 1. Work is complete
-├─ 2. (Optional) Pre-completion task-reviewer when the matrix's Review column says YES
-├─ 3. Call PATCH /api/tasks/:id/complete with placeholder hook_result fields
-├─ 4. hook-bridge runs after_doing on the tool_call (pre-curl)
-├─ 5. Veto raised? → Read failure, fix issue, retry the curl
-├─ 6. Curl succeeds → before_review fires post-curl (non-blocking)
-├─ 7. needs_review=true? → STOP, wait for human
-└─ 8. needs_review=false? → mark_reviewed (after_review fires), claim next
-
-API ENDPOINT: PATCH /api/tasks/:id/complete
-REQUIRED BODY: {
-  "agent_name": "Pi",
-  "time_spent_minutes": 45,
-  "completion_notes": "...",
-  "completion_summary": "Brief one-line summary for tracking.",
-  "actual_complexity": "medium",
-  "actual_files_changed": "lib/foo.ex, lib/bar.ex, test/foo_test.exs",
-  "skills_version": "1.0",
-  "review_report": "..." (optional — include when task-reviewer ran),
-  "after_doing_result": {
-    "exit_code": 0,
-    "output": "Hook output here",
-    "duration_ms": 45678
-  },
-  "before_review_result": {
-    "exit_code": 0,
-    "output": "Hook output here",
-    "duration_ms": 2340
-  },
-  "explorer_result": {
-    "dispatched": false,
-    "reason": "self_reported_exploration",
-    "summary": "<40+ non-whitespace chars>"
-  },
-  "reviewer_result": {
-    "dispatched": false,
-    "reason": "self_reported_review",
-    "summary": "<40+ non-whitespace chars>"
-  },
-  "workflow_steps": [
-    {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
-    {"name": "planner",        "dispatched": true,  "duration_ms": 8200},
-    {"name": "implementation", "dispatched": true,  "duration_ms": 1820000},
-    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300},
-    {"name": "after_doing",    "dispatched": true,  "duration_ms": 45678},
-    {"name": "before_review",  "dispatched": true,  "duration_ms": 2340}
-  ]
-}
-
-SKIP FORM for explorer_result / reviewer_result (when subagent not dispatched):
-  {"dispatched": false, "reason": "<enum>", "summary": "<40+ non-whitespace chars>"}
-Reason enum: no_subagent_support, small_task_0_1_key_files, trivial_change_docs_only,
-             self_reported_exploration, self_reported_review
-```
-
-## Real-World Impact
-
-**Before this skill (completing without hooks):**
-- 40% of completions had failing tests
-- 2.3 hours average time to fix post-completion
-- 65% required reopening and rework
-
-**After this skill (hooks before complete):**
-- 2% of completions had issues
-- 15 minutes average fix time (pre-completion)
-- 5% required rework
-
-**Time savings: 2+ hours per task (90% reduction in post-completion rework)**
+Background: `docs/completion-rationale.md` § The Excuses Table and § Before and After Figures.
 
 ---
 
