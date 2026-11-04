@@ -94,6 +94,11 @@ Step 6 of the reviewer agent and its inline skill gains a Twin Check. For each t
 - **W2255 (no Stop-gate block while a subagent runs)** — not applicable: this port has no blocking Stop gate, and Pi's `turn_end` and `agent_end` events cannot hold a turn open (`docs/HOOK_RESEARCH.md`).
 - **W2259 (measure the effect)** — not applicable: it measured stride on Claude Code only, so this port claims no saving from it.
 
+### Not ported from G455
+
+- **The claims-census hand-off in W2295** — not applicable: stride-pi has no claims census, so there is no `claims_verified_by` record for the reviewer to check again (W2621).
+- **W2293's matrix-row stand-in** — not carried: this reviewer judges no `behaviour_test_matrix` rows, so no Verified row can stand in for a test-item mapping (W2619).
+
 ## [1.21.0] - 2026-10-01
 
 ### Fixed — an identifier-form completion URL no longer routes the diff through a stale claim cache (D309)
