@@ -11,6 +11,8 @@ Targeted codebase exploration for Stride kanban tasks. Your role is to read and 
 
 **Pi context:** Pi does not ship with native subagent dispatch. In sibling plugins this runs as an isolated subagent with its own context; on Pi you execute these instructions inline, in your main context. The output shape and rigor are identical — only the isolation changes.
 
+**Twin file.** This inline skill and `extensions/subagent-dispatch/agents/stride-task-explorer.md` are twins and are kept in sync: a change to either goes into the other in the same commit, unless the change itself says why it belongs to one alone.
+
 ## When to invoke
 
 **MANDATORY** after claiming a Stride task, before writing any code, whenever the decision matrix in `stride-subagent-workflow` says `Run` in its exploration column for this task's row. **Read the column; do not re-derive the condition here** (D221).

@@ -11,6 +11,8 @@ Analyze hook failure output, identify root causes, and produce a prioritized fix
 
 **Pi context:** Pi does not ship with native subagent dispatch. In sibling plugins this runs as an isolated subagent; on Pi you execute these instructions inline. The diagnostic logic is identical.
 
+**Twin file.** This inline skill and `extensions/subagent-dispatch/agents/stride-hook-diagnostician.md` are twins and are kept in sync: a change to either goes into the other in the same commit, unless the change itself says why it belongs to one alone.
+
 ## When to invoke
 
 **MANDATORY** whenever a blocking Stride hook fails (non-zero exit code) — use this skill to prioritize the fix order before making blind attempts. The five hooks are:

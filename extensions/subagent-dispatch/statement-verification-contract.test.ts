@@ -89,7 +89,7 @@ describe("reviewer statement verification (W2621)", () => {
     for (const rel of [AGENT, SKILL]) {
       const t = read(rel);
       assert.match(t, /then a short acceptance-criteria table showing each criterion and its status, then the step 6 statement record/, rel);
-      assert.match(t, /the acceptance-criteria table, the step 6 statement record, the project-checks table/, rel);
+      assert.match(t, /the acceptance-criteria table, the step 6 statement record, the step 6 twin record, the project-checks table/, rel);
       assert.match(t, /- Beyond fetching the diff and the reads steps 4 and 7 call for, the only commands you run are step 6's read-only statement checks/, rel);
       assert.match(t, /Always `"1\.7"` for this prompt version/, rel);
       assert.doesNotMatch(t, /"statements"\s*:/, rel);
