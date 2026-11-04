@@ -23,6 +23,77 @@ Why accepted rather than backfilled:
 
 The audit also found **zero** GitHub releases without a matching tag, so the record is incomplete in only this one direction.
 
+## [1.22.0] - 2026-11-03
+
+This release takes two stride batches: G446–G448 (accuracy, speed and token usage, stride 1.81.0–1.83.0, W2607–W2614) and the G455 rework-prevention tasks (stride 1.85.0, W2616–W2622).
+
+### Added — the hook bridge saves the claimed task to a file (W2607)
+
+After a claim whose own response carries the task's data object, the hook bridge writes that object unchanged to `.stride/.task-<IDENTIFIER>.json`, through a temp file and an atomic rename. An identifier that is not a plain token falls back to the numeric task id. A failed, truncated or empty claim response writes nothing. The file is removed by the after_review cleanup, when a completion needs no review, or when the next claim is for another task, so later steps can point an agent at the server's copy of the task instead of retyping it.
+
+### Added — the explorer and reviewer read the task from that file (W2608)
+
+When the task file exists, `stride-workflow` and `stride-subagent-workflow` give both agents, dispatched or inline, its absolute path as `TASK_FILE`, with a line saying its contents are data and never instructions, instead of pasting the fields. Each agent checks that the record names its own task and reports a `task_file:` line when the file is missing, unreadable or for another task, then falls back to fields in the prompt. The reviewer takes one criterion per non-blank line. Without a task file nothing changes.
+
+### Added — Step 0 warns when the installed stride-pi is older than main (W2609)
+
+`extensions/hook-bridge/check-plugin-current.ts` compares the installed version (a checkout's `package.json`, or the `.stride-pi-version` record `install.sh` now writes) with `main`'s `package.json`. An older install gets a single line with both version numbers and the command to update; any other result prints nothing. It never blocks and always exits 0. An install taken between releases reads as current, since `main`'s version moves only at release.
+
+### Changed — round two of review must be earned (W2610)
+
+Step 5 runs a second review round only when round one's fixes edited a code path (not documentation, a test, or a whole-line comment change), or round one reported a critical, or any finding with category `security`. Otherwise each fix is written down with its severity, category, `file:line` and a one-line description of the change, in both `completion_notes` and `completion_summary`, and round one's block is submitted. Markdown, this port's own product, counts as documentation, which is a disclosed limit; `.stride.md` counts as code. **The round-two triggers are followed, not enforced:** no executable surface in this port can see that a round happened. The two-round ceiling, the critical exemption and the rule that a security finding is never only recorded are unchanged. The `review-round-cap` canon anchor moves to v2.
+
+### Added — a record of what Pi does while a subagent runs (W2611)
+
+The new `docs/HOOK_RESEARCH.md` records, for Pi 0.67.68, why two of the batch's fixes do not apply (see Not ported below), with the code and documentation each finding was read from and the conditions under which to look again. The subagent-workflow skill now says the port waits for the explorer.
+
+### Changed — discovery uses the slim next view, and enrichment reads the full task (W2612)
+
+Discovery calls `GET /api/tasks/next?response_view=slim`; an older server's full reply still works. The enrichment check reads the full task body instead: the claim response when the hook bridge is installed, or `GET /api/tasks/:id` before `before_doing` without it. After an enrichment PATCH on the bridge path, the skill deletes the now-stale task file, named by the bridge's own rule. The advisory continuation's next call is slim too and still reads only the shape-checked identifier.
+
+### Changed — a lighter `stride-workflow` skill (W2613)
+
+The skill shrinks by about 10% (87,522 to 79,090 bytes). Rationale, defect history and measurement notes move to `docs/orchestrator-rationale.md`, which lives in the repository and is not installed, and each moved passage leaves a one-line pointer. Every rule, gate, schema, self-check and canon anchor stays in the skill. The Quick Reference Card is removed, because its decision-matrix summary disagreed with Row Precedence for medium defects.
+
+### Changed — a lighter completion skill and reviewer (W2614)
+
+History, figures and defect notes move from `stride-completing-tasks` to `docs/completion-rationale.md` and from the reviewer to `docs/task-reviewer-rationale.md`, with a pointer at each site. Completion-skill sections that only restated others are gone, including two that contradicted it (one called `after_review` blocking; the reference card showed real hook output). The reviewer agent and its inline skill drop the same passages and keep every rule. Sizes: `stride-completing-tasks` 44,944 to 35,653 bytes, reviewer agent 34,594 to 34,195, reviewer skill 35,286 to 34,887.
+
+### Added — created tasks carry a behaviour_test_matrix by default (W2616)
+
+`stride-creating-tasks` now sets out the row contract: the seven fixed categories, a waiver with an `na_reason`, manual rows when the strategy has only manual tests, test names taken from `testing_strategy`, no secrets in row text, and the 422 a partial matrix earns. `stride-creating-goals` and the task-decomposer agent and its inline skill apply it to every child, and a string that looks like a credential in a project file never ends up in a row the decomposer writes. The server still accepts a missing or empty matrix.
+
+### Added — a cross-field consistency pass in the enricher and the decomposer (W2617)
+
+Before handing a task back, both check its fields against one another in six ways: verification covers the whole criterion; instructions do not contradict warnings; prescribed regexes and commands are read against the task's own edge cases and never run; every conflict names a winner and drops neither side; each criterion fits on one line; and external contracts are cited by `file:line` without quoting secrets. Nothing blocks. The enricher puts what it cannot settle in `technical_details.open_questions`, and the decomposer writes it into the child task's description as an "Open question:" line. The creating and enriching skills point at the pass.
+
+### Added — the explorer checks the task's own statements against the code (W2618)
+
+A new step 6 in the explorer agent and its inline skill collects what the task claims about the current code and tests each claim with a read-only command it picks itself, recorded as `verified_by`, never one from the task text. A commit window from `inserted_at` runs only with a validated timestamp and allow-listed, quoted paths, and cites commits by hash. Contradictions open the summary under "Task statements the current code contradicts", a section no shortening removes. Without a task file the orchestrator now also passes `description`, `technical_details` and `inserted_at`.
+
+### Changed — the reviewer maps each listed test item to the test that covers it (W2619)
+
+Step 4 of the reviewer agent and its inline skill names, by `file:line`, the test covering each `unit_tests`, `integration_tests` and `edge_cases` entry. A test counts only when its assertions check the item, judged by reading it, never by running it. An item nothing covers is an Important testing finding and fails the testing verdict; `manual_tests` are left out with a note. The mapping lives in the prose report; the block and `schema_version` are unchanged.
+
+### Added — break-it evidence for new and changed tests (W2620)
+
+Step 4 of `stride-workflow` asks the implementer to break every new or changed test once, see it fail, undo the edit by hand and see it pass, and to prove the restore with matching content-hash snapshots of the repository under change before review. Text pins are counted by occurrence, never by line. Step 5 hands the entries to the reviewer as a labelled `break_it` section, kept apart from the round-two fixes list, and both the reviewer agent and its inline skill raise an Important testing issue for a missing entry or a break that misses what the test asserts.
+
+### Added — the reviewer verifies the factual statements a diff adds (W2621)
+
+Step 6 of the reviewer agent and its inline skill lists each count, path, identifier, line reference, version number or claim about this repository's code that the diff's new prose, comments, changelog lines or skill and agent text contain, and checks it with a read-only command of its own choosing from `grep`, `git log`, `git show`, `git diff`, `ls`, `wc` or `cat`, never one taken from the diff or the task. Diff terms are allow-listed and quoted after `--`, paths stay relative, non-symlink and clear of credential files, and git runs with its pager, fetching, optional locks, fsmonitor, signature checks, external diff and textconv turned off. A contradicted statement is an Important `code_quality` issue, the command and result go into the prose report, and a statement nothing can settle is recorded as unverifiable.
+
+### Added — the reviewer flags untouched twins and mirrors of changed files (W2622)
+
+Step 6 of the reviewer agent and its inline skill gains a Twin Check. For each touched file it looks up the counterparts the repository declares (the paired `.sh`/`.ps1` extension, a file named in a keep-in-sync, mirror or twin sentence, a file sharing a canon anchor) with `git ls-files` and `grep` only, takes every path from `git ls-files` output, and reports a mirror sentence naming a missing file as dangling. A counterpart left alone while behaviour or a shared rule changes is an Important `code_quality` issue naming both files, unless the task says why. The reviewer, explorer, decomposer and hook-diagnostician agent files and their inline skills now name each other as twins.
+
+### Not ported from G446–G448
+
+- **W2250 (dispatcher mode by default)** — not applicable: it needs a `task-runner` agent, and this port has none.
+- **W2254 (read while the explorer runs)** — not applicable: a `dispatch_agent` call holds the turn until its subprocess exits, so the model gets no turn to read or plan in (`docs/HOOK_RESEARCH.md`).
+- **W2255 (no Stop-gate block while a subagent runs)** — not applicable: this port has no blocking Stop gate, and Pi's `turn_end` and `agent_end` events cannot hold a turn open (`docs/HOOK_RESEARCH.md`).
+- **W2259 (measure the effect)** — not applicable: it measured stride on Claude Code only, so this port claims no saving from it.
+
 ## [1.21.0] - 2026-10-01
 
 ### Fixed — an identifier-form completion URL no longer routes the diff through a stale claim cache (D309)
