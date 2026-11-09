@@ -335,6 +335,15 @@ function openPart(part: string): number | null {
   }
 }
 
+/** Remove one file, best effort: a failure here never stops the run. */
+function rmQuietly(file: string): void {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    /* best effort */
+  }
+}
+
 function closeQuietly(fd: number): void {
   try {
     fs.closeSync(fd);
@@ -474,7 +483,7 @@ function ensureGitignore(adir: string, stem: string, log: Log): boolean {
     st = null;
   }
   if (st?.isSymbolicLink()) {
-    fs.rmSync(gitignore, { force: true });
+    rmQuietly(gitignore);
   } else if (st && !st.isFile()) {
     log(`stride: attachments ${stem}: .stride/attachments/.gitignore is not a regular file; nothing downloaded\n`);
     return false;
@@ -583,7 +592,7 @@ async function settleEntry(planned: PlannedEntry, ctx: DownloadContext): Promise
       reason = "transport";
     }
   }
-  fs.rmSync(part, { force: true });
+  rmQuietly(part);
   entry.status = "failed";
   entry.reason = reason;
   entry.local_file = null;
