@@ -60,12 +60,14 @@ When skills reference tool names from other platforms, use Pi equivalents:
 
 | Skill Reference | Pi Tool |
 |----------------|---------|
-| `Read` / `read_file` | `read` |
+| `Read` / `read_file` | `read` (text, and PNG/JPEG/GIF/WebP images; no PDF view, see below) |
 | `Grep` / `grep_search` | `search` |
 | `Glob` | `glob` |
 | `Bash` / `run_shell_command` | `bash` |
 | `Edit` / `replace` | `edit` |
 | `Write` / `write_file` | `write` |
+
+**What `read` shows (verified on Pi 0.67.68).** Pi 0.67.68's own `read` tool (`createReadTool` in `@mariozechner/pi-coding-agent`), run on a PNG, returned `Read image file [image/png]` with an image block; run on a one-page PDF, it returned the PDF's raw bytes decoded as text, with no rendering. It detects images by their bytes (JPEG, PNG, GIF and WebP only), truncates text at 2,000 lines or 50 KB, and takes only `path`, `offset` and `limit`, with no `pages` range. So there is no PDF view: the explorer and reviewer view images with `read`, read large text by `offset`/`limit`, and for a PDF or any other type work from its `filename`, `content_type` and `byte_size`, under their **Reading the attachments from ATTACHMENTS_DIR.** paragraph. Re-check this whenever the Pi version moves.
 
 ## Completion Validation (G65)
 
