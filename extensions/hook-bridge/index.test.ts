@@ -18,6 +18,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -29,6 +30,7 @@ import {
   toolOutputCandidates,
 } from "./after-goal-detector.ts";
 import { runAfterGoalAndCleanup } from "./after-goal-runner.ts";
+import { downloadClaimAttachments } from "./attachments.ts";
 import {
   COMMAND_OUTPUT_TAIL_LINES,
   formatHookResultJson,
@@ -615,5 +617,85 @@ describe("task file wiring (W2607)", () => {
       assert.ok(!fs.existsSync(taskFilePath(cwd, "W1")), "previous task's file deleted");
       assert.ok(fs.existsSync(taskFilePath(cwd, "W2")), "new task's file written");
     });
+  });
+});
+
+describe("attachments wiring (W2532)", () => {
+  function withTmpDir(fn: (dir: string) => Promise<void> | void): Promise<void> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stride-pi-index-"));
+    return Promise.resolve(fn(dir)).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
+  }
+
+  const body = new TextEncoder().encode("attached\n");
+  const attachment = {
+    id: 31,
+    filename: "notes.txt",
+    content_type: "text/plain",
+    byte_size: body.length,
+    sha256: createHash("sha256").update(body).digest("hex"),
+    comment_id: null,
+    uploaded_at: "2026-11-08T10:00:00Z",
+    download_url: "/api/tasks/7897/attachments/31",
+  };
+  const proven = JSON.stringify({
+    data: { id: 7897, identifier: "W1", title: "t", attachments: [attachment] },
+    hook: { name: "before_doing" },
+  });
+
+  function stub() {
+    const calls: string[] = [];
+    const fetch = async (url: string): Promise<Response> => {
+      calls.push(url);
+      return new Response(body, { status: 200 });
+    };
+    return {
+      calls,
+      deps: {
+        fetch,
+        readAuth: () => ({ apiBase: "https://stride.test", token: "tok-fixture-wiring-not-a-credential" }),
+        stderr: () => {},
+      },
+    };
+  }
+
+  it("a before_doing claim result whose own content proves the task identity triggers the download; an unproven one does not", async () => {
+    await withTmpDir(async (cwd) => {
+      const { calls, deps } = stub();
+      // The claim branch as index.ts runs it: task file first, then the download
+      // from the same tool_result's content.
+      runClaimSteps({ clearPriorTask: () => {}, recordTaskFile: () => recordClaimedTask(cwd, proven, undefined) });
+      const summary = await downloadClaimAttachments(cwd, proven, undefined, deps);
+      assert.equal(summary?.downloaded, 1);
+      assert.deepEqual(calls, ["https://stride.test/api/tasks/7897/attachments/31"]);
+      const dir = path.join(cwd, ".stride", "attachments", "W1");
+      assert.ok(fs.existsSync(path.join(dir, "manifest.json")));
+      assert.ok(fs.existsSync(path.join(dir, "31-notes.txt")));
+      assert.ok(fs.existsSync(taskFilePath(cwd, "W1")), "the task file is untouched");
+    });
+
+    for (const unproven of [
+      proven.slice(0, 80),
+      JSON.stringify({ error: "Task is not available to claim" }),
+      JSON.stringify({ data: {} }),
+    ]) {
+      await withTmpDir(async (cwd) => {
+        // A directory an earlier proven claim left must survive an unproven one.
+        const earlier = path.join(cwd, ".stride", "attachments", "W1");
+        fs.mkdirSync(earlier, { recursive: true });
+        fs.writeFileSync(path.join(earlier, "manifest.json"), "{}\n");
+        const { calls, deps } = stub();
+        assert.equal(await downloadClaimAttachments(cwd, unproven, undefined, deps), null);
+        assert.equal(calls.length, 0);
+        assert.equal(fs.readFileSync(path.join(earlier, "manifest.json"), "utf-8"), "{}\n");
+      });
+    }
+  });
+
+  it("index.ts downloads from this tool_result's own content, after the before_doing section", () => {
+    const source = fs.readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+    const call = source.indexOf("downloadClaimAttachments(ctx.cwd, event.content, event.details");
+    assert.ok(call > 0, "the call reads event.content and event.details");
+    assert.ok(call > source.indexOf("writeClaimDirtyBaseline(ctx.cwd"), "it runs after the section's finalize");
+    assert.ok(call > source.lastIndexOf("const result = await runHook(hook, ctx)"), "it runs after runHook");
   });
 });

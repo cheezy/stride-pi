@@ -27,6 +27,10 @@
  *     `.stride/.task-<IDENTIFIER>.json` (task-file.ts), after the claim-time
  *     cleanup. It is deleted by a completion that needs no review, by the
  *     after_review cleanup, or by the next claim of a different task.
+ *   - (W2532) After the ## before_doing section, the attachments that the
+ *     claim's own proven output lists are downloaded into
+ *     `.stride/attachments/<STEM>/` with manifest.json written last
+ *     (attachments.ts). Never fatal; nothing reaches stdout.
  */
 
 import * as fs from "node:fs";
@@ -72,6 +76,7 @@ import {
   writeCanonicalResponse,
 } from "./after-goal-status.js";
 import { runAfterGoalAndCleanup } from "./after-goal-runner.js";
+import { downloadClaimAttachments } from "./attachments.js";
 import {
   type CommandOutput,
   type HookResult,
@@ -267,6 +272,18 @@ export default function (pi: ExtensionAPI): void {
       const finalized = resolveFinalizeBeforeDoingEnv(baseRef, loadEnvCache(ctx.cwd));
       if (finalized) writeEnvCache(ctx.cwd, finalized);
       writeClaimDirtyBaseline(ctx.cwd, captureClaimDirtyBaseline(ctx.cwd));
+      // (W2532) Download the attachments THIS claim's own output lists, only
+      // when that output proves the task identity; never from the env cache
+      // or a persisted response. Runs after the ## before_doing section, as
+      // stride-hook.sh does, so a slow download cannot shrink the section's
+      // budget. Awaited so manifest.json exists before the agent's next turn;
+      // bounded by the module's own 120 s budget. Never fatal, nothing on
+      // stdout.
+      try {
+        await downloadClaimAttachments(ctx.cwd, event.content, event.details, { fetch });
+      } catch {
+        // intentional: never disturb the already-succeeded claim
+      }
     }
 
     // Run `## after_goal` (when the server bundled one) and then clean up
